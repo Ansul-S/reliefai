@@ -1,6 +1,6 @@
 # ReliefAI — Post-Disaster Relief Orchestrator
 
-ReliefAI is a multi-agent AI system that coordinates disaster relief operations in real time. It solves the fragmented coordination problem where volunteer schedules, supply tracking, and community communications are scattered across WhatsApp groups and spreadsheets. A single natural-language command dispatches a network of specialist AI agents — volunteer scheduler, supply chain manager, multilingual communications agent, shift coverage detector, and report generator — all coordinated by a central orchestrator running on Groq's Llama 3.1 70B. Built with FastAPI, async SQLite, and FastMCP tool servers, deployed on Google Cloud Run for a total infrastructure cost of $0.
+ReliefAI is a multi-agent AI system that coordinates disaster relief operations in real time. It solves the fragmented coordination problem where volunteer schedules, supply tracking, and community communications are scattered across WhatsApp groups and spreadsheets. A single natural-language command dispatches a network of specialist AI agents — volunteer scheduler, supply chain manager, multilingual communications agent, shift coverage detector, and report generator — all coordinated by a central orchestrator running on Groq's Llama 3.3 70B. Built with FastAPI, async SQLite, and FastMCP tool servers, deployed on Google Cloud Run for a total infrastructure cost of $0.
 
 ---
 
@@ -11,7 +11,7 @@ User / Dashboard
       │
       ▼
 ┌─────────────────────────────┐
-│     Orchestrator Agent      │  ← Groq Llama 3.1 70B
+│     Orchestrator Agent      │  ← Groq Llama 3.3 70B
 │   (Primary Coordinator)     │
 └────────────┬────────────────┘
              │ delegates to
@@ -40,7 +40,7 @@ Volunteer  Supply    Comms Agent   Shift Agent   Report Agent
 
 | Component   | Technology               | Cost  |
 |-------------|--------------------------|-------|
-| AI Agents   | Groq API (Llama 3.1 70B) | Free  |
+| AI Agents   | Groq API (Llama 3.3 70B) | Free  |
 | Backend     | FastAPI + Python 3.11    | Free  |
 | Database    | SQLite + SQLAlchemy      | Free  |
 | MCP Tools   | FastMCP                  | Free  |

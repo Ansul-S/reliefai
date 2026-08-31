@@ -26,7 +26,15 @@ echo "✓ Dependencies installed."
 
 # ── Environment file ───────────────────────────────────────────────
 if [ ! -f .env ]; then
-  cp .env.example .env
+  # Written inline rather than copied from a template, so setup works on a
+  # fresh clone with no .env.example present.
+  cat > .env <<'ENVFILE'
+GROQ_API_KEY=your_groq_key_here
+API_KEY=reliefai-demo-key
+GROQ_MODEL=openai/gpt-oss-120b
+MAX_TOOL_ITERATIONS=8
+DATABASE_URL=sqlite+aiosqlite:///./relief.db
+ENVFILE
   echo ""
   echo "================================================"
   echo "  ACTION REQUIRED: Add your Groq API key"
@@ -74,11 +82,13 @@ echo "  Dashboard:  http://localhost:8000"
 echo "  API Docs:   http://localhost:8000/docs"
 echo "  Health:     http://localhost:8000/health"
 echo ""
-echo "  The server auto-seeds demo data on first run."
+echo "  Demo data seeds itself on first run — nothing to do."
 echo ""
-echo "  After server starts, run in a new terminal:"
+echo "  In a new terminal:"
 echo "    source venv/bin/activate"
-echo "    python seed_demo.py"
+echo "    pytest                    # 55 tests, no API key needed"
+echo "    python -m evals --list    # evaluation cases"
+echo "    python seed_demo.py       # optional: 5 live AI commands"
 echo ""
 echo "  Press Ctrl+C to stop the server."
 echo "================================================"

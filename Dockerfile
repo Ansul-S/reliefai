@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Hugging Face Spaces runs containers as a non-root user (uid 1000).
+# Run as a non-root user, as container platforms expect.
 RUN useradd -m -u 1000 user
 
 WORKDIR /app
@@ -22,5 +22,5 @@ ENV HOME=/home/user \
 
 EXPOSE 7860
 
-# Shell form so $PORT expands (HF Spaces uses 7860, Cloud Run injects 8080)
+# Shell form so $PORT expands — Render injects its own port at runtime
 CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-7860}

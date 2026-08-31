@@ -1,5 +1,12 @@
 # ReliefAI — Post-Disaster Relief Orchestrator
 
+**Live demo → https://reliefai-zmsv.onrender.com**
+
+> Hosted on Render's free plan, which sleeps after 15 minutes of inactivity.
+> The first request wakes it and takes roughly 50 seconds; everything after
+> that is fast. Demo data seeds itself on boot, so the dashboard is always
+> populated.
+
 ReliefAI is a multi-agent AI system that coordinates disaster relief operations in real time. It solves the fragmented coordination problem where volunteer schedules, supply tracking, and community communications are scattered across WhatsApp groups and spreadsheets. A single natural-language command goes to an orchestrator agent that selects and calls tools from an MCP tool server through the LLM's native function-calling API — reading live operational data, reasoning over the results, and calling further tools until it can answer. Built with FastAPI, async SQLite, and a FastMCP tool server, running on Groq and deployed on Render for a total infrastructure cost of $0.
 
 ---
@@ -115,7 +122,7 @@ tools*, so there is only ever one implementation of each capability:
 ### 1. Clone the repository
 
 ```bash
-git clone YOUR_GITHUB_REPO_URL
+git clone https://github.com/Ansul-S/reliefai.git
 cd reliefai
 ```
 
@@ -146,16 +153,16 @@ The script will:
 | http://localhost:8000/docs | Interactive API Explorer |
 | http://localhost:8000/health | Health Check |
 
-### 5. Seed demo data
+### 5. Demo data
 
-Open a **new terminal** (keep the server running):
+The Typhoon Carina scenario **seeds itself on startup** whenever the database is
+empty, so there is nothing to run. To additionally fire five live AI commands
+through the orchestrator, open a second terminal:
 
 ```bash
 source venv/bin/activate
 python seed_demo.py
 ```
-
-This creates the full Typhoon Carina scenario and runs 5 live AI commands.
 
 ### 6. Test the main endpoint
 
@@ -164,6 +171,13 @@ curl -X POST http://localhost:8000/disasters/1/command \
   -H "X-API-Key: reliefai-demo-key" \
   -H "Content-Type: application/json" \
   -d '{"command": "Assess current situation and identify critical issues"}'
+```
+
+### 7. Run the checks
+
+```bash
+pytest                  # 55 tests, no API key or network needed
+python -m evals --list  # see the evaluation cases
 ```
 
 ---
@@ -196,6 +210,43 @@ curl -X POST http://localhost:8000/disasters/1/command \
 | `POST`  | `/demo/seed`                        | Seed Typhoon Carina scenario         |
 | `POST`  | `/demo/simulate`                    | Run all 5 demo commands              |
 | `GET`   | `/health`                           | Health check                         |
+
+---
+
+### Orchestrator response shape
+
+`POST /disasters/{id}/command` returns the fields the dashboard has always read,
+plus tracing added alongside the tool-calling loop:
+
+```jsonc
+{
+  "orchestrator_summary": "…",          // the agent's answer
+  "agents_called":  ["get_supply_status", "create_task"],  // tools, kept under
+  "tools_called":   ["get_supply_status", "create_task"],  // the old key name
+  "results":        { "get_supply_status": [...] },        // raw tool output
+  "alerts":                   ["Water critically low"],
+  "next_recommended_actions": ["Order 1600L of water"],
+  "execution_time_ms": 51234,
+
+  // Added with the tool-calling loop
+  "iterations": 3,
+  "model": "openai/gpt-oss-120b",
+  "trace": [
+    { "step": "llm",  "iteration": 1, "duration_ms": 847, "finish_reason": "tool_calls" },
+    { "step": "tool", "iteration": 1, "duration_ms": 10, "tool": "get_supply_status",
+      "arguments": { "disaster_id": 1 }, "ok": true }
+  ],
+  "usage": {
+    "input_tokens": 7442, "output_tokens": 784, "total_tokens": 8226,
+    "llm_ms": 94121, "tool_ms": 22, "estimated_cost_usd": 0.0017043
+  }
+}
+```
+
+`agents_called` is retained under its original name for dashboard
+compatibility, but it now lists the tools the model chose rather than a fixed
+roster of prompt agents. Unknown keys are ignored by the frontend, so the added
+fields are backward compatible.
 
 ---
 
@@ -444,28 +495,40 @@ reliefai/
 │   └── test_eval_scorers.py   # The scorers reject bad behaviour
 │
 ├── main.py                    # FastAPI application
-├── pytest.ini                 # Test configuration
-├── seed_demo.py               # Demo data seeder
+├── seed_demo.py               # Optional: runs 5 live AI commands
 ├── run_local.sh               # One-command local setup
+├── pytest.ini                 # Test configuration
+├── render.yaml                # Render blueprint (deployment)
 ├── Dockerfile                 # Container definition
 ├── requirements.txt           # Python dependencies
-├── .env.example               # Environment template
 ├── .gitignore
 └── .dockerignore
 ```
 
+> There is no `.env.example` in the repo. `run_local.sh` writes a starter `.env`
+> for you on first run; otherwise create one from the **Environment Variables**
+> table below. `.env` is gitignored and must never be committed.
+
 ---
 
-## GitHub Setup
+## Development Workflow
+
+The repository is [github.com/Ansul-S/reliefai](https://github.com/Ansul-S/reliefai).
+Render watches `main` and redeploys automatically on push, so shipping is:
 
 ```bash
-git init
-git add .
-git commit -m "Initial commit — ReliefAI Post-Disaster Relief Orchestrator"
-git branch -M main
-git remote add origin YOUR_GITHUB_REPO_URL
-git push -u origin main
+pytest                       # must pass — no network needed
+git push origin main         # Render builds and deploys from render.yaml
+curl https://reliefai-zmsv.onrender.com/health
 ```
+
+Before changing a prompt, a tool description, or `GROQ_MODEL`, run the evals —
+those edits change agent behaviour in ways the unit tests cannot see:
+
+```bash
+python -m evals --no-judge --delay 20
+```
+
 ---
 
 ## Deployment (Render)
@@ -487,8 +550,17 @@ variables come from the blueprint.
 ### Step 3 — Verify
 
 ```bash
-curl https://YOUR-SERVICE.onrender.com/health
+curl https://reliefai-zmsv.onrender.com/health
 ```
+
+```json
+{"status":"ok","db":"connected","ai_provider":"groq",
+ "model":"openai/gpt-oss-120b","version":"1.0.0"}
+```
+
+> Render hostnames are globally unique. This service is `reliefai-zmsv` because
+> the bare `reliefai` name was already taken by an unrelated project — dropping
+> the suffix sends people somewhere else entirely.
 
 Demo data seeds itself on startup — no manual seed step required.
 
@@ -502,11 +574,30 @@ Demo data seeds itself on startup — no manual seed step required.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `GROQ_API_KEY` | Your Groq API key (required) | — |
-| `API_KEY` | Dashboard authentication key | `reliefai-demo-key` |
-| `DATABASE_URL` | SQLAlchemy async DB URL | `sqlite+aiosqlite:///./relief.db` |
-| `GROQ_MODEL` | Groq model id (must support tool calling) | `openai/gpt-oss-120b` |
+| `GROQ_API_KEY` | Your Groq API key (**required**) | — |
+| `API_KEY` | Dashboard / API authentication key | `reliefai-demo-key` |
+| `GROQ_MODEL` | Groq model id — **must support native tool calling** | `openai/gpt-oss-120b` |
 | `MAX_TOOL_ITERATIONS` | Hard cap on tool-calling rounds per command | `8` |
+| `DATABASE_URL` | SQLAlchemy async DB URL | `sqlite+aiosqlite:///./relief.db` |
+| `RELIEFAI_EVAL_DB` | Where the eval harness puts its throwaway database | system temp dir |
+
+On Render, `API_KEY`, `GROQ_MODEL` and `MAX_TOOL_ITERATIONS` come from
+`render.yaml`; only `GROQ_API_KEY` is entered by hand, because it is marked
+`sync: false` and so is never committed.
+
+### If the agents suddenly stop working
+
+Groq retires model ids without much notice, and the failure is quiet from the
+outside: the server boots, `/health` returns `ok`, and every agent call errors.
+Check the id is still served before assuming a code problem:
+
+```bash
+curl -H "Authorization: Bearer $GROQ_API_KEY" \
+     https://api.groq.com/openai/v1/models
+```
+
+Any replacement must support both native tool calling and JSON mode. Swap it via
+the `GROQ_MODEL` environment variable — no code change or image rebuild needed.
 
 ---
 

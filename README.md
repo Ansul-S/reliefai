@@ -1,6 +1,6 @@
 # ReliefAI — Post-Disaster Relief Orchestrator
 
-ReliefAI is a multi-agent AI system that coordinates disaster relief operations in real time. It solves the fragmented coordination problem where volunteer schedules, supply tracking, and community communications are scattered across WhatsApp groups and spreadsheets. A single natural-language command dispatches a network of specialist AI agents — volunteer scheduler, supply chain manager, multilingual communications agent, shift coverage detector, and report generator — all coordinated by a central orchestrator running on Groq's Llama 3.3 70B. Built with FastAPI, async SQLite, and FastMCP tool servers, deployed on Google Cloud Run for a total infrastructure cost of $0.
+ReliefAI is a multi-agent AI system that coordinates disaster relief operations in real time. It solves the fragmented coordination problem where volunteer schedules, supply tracking, and community communications are scattered across WhatsApp groups and spreadsheets. A single natural-language command dispatches a network of specialist AI agents — volunteer scheduler, supply chain manager, multilingual communications agent, shift coverage detector, and report generator — all coordinated by a central orchestrator running on Groq. Built with FastAPI, async SQLite, and FastMCP tool servers, deployed on Render for a total infrastructure cost of $0.
 
 ---
 
@@ -11,7 +11,7 @@ User / Dashboard
       │
       ▼
 ┌─────────────────────────────┐
-│     Orchestrator Agent      │  ← Groq Llama 3.3 70B
+│     Orchestrator Agent      │  ← Groq (gpt-oss-120b)
 │   (Primary Coordinator)     │
 └────────────┬────────────────┘
              │ delegates to
@@ -40,11 +40,11 @@ Volunteer  Supply    Comms Agent   Shift Agent   Report Agent
 
 | Component   | Technology               | Cost  |
 |-------------|--------------------------|-------|
-| AI Agents   | Groq API (Llama 3.3 70B) | Free  |
+| AI Agents   | Groq API (gpt-oss-120b)  | Free  |
 | Backend     | FastAPI + Python 3.11    | Free  |
 | Database    | SQLite + SQLAlchemy      | Free  |
 | MCP Tools   | FastMCP                  | Free  |
-| Deployment  | Google Cloud Run         | Free  |
+| Deployment  | Render (Docker)          | Free  |
 | Repository  | GitHub                   | Free  |
 | **Total**   |                          | **$0**|
 
@@ -54,8 +54,8 @@ Volunteer  Supply    Comms Agent   Shift Agent   Report Agent
 
 - Python 3.11+
 - Free Groq API key from [console.groq.com](https://console.groq.com)
-- Docker (for Cloud Run deployment only)
-- Google Cloud account (for Cloud Run deployment only)
+- Docker (for container builds only)
+- A Render account (for deployment only)
 
 ---
 
@@ -247,66 +247,37 @@ git branch -M main
 git remote add origin YOUR_GITHUB_REPO_URL
 git push -u origin main
 ```
-
 ---
 
-## Cloud Run Deployment
+## Deployment (Render)
 
-### Step 1 — Authenticate and configure
+The repo ships a `render.yaml` blueprint, so deployment is fully declarative.
 
-```bash
-gcloud auth login
-gcloud config set project YOUR_PROJECT_ID
-gcloud services enable run.googleapis.com artifactregistry.googleapis.com
-```
+### Step 1 — Create the service
 
-### Step 2 — Create artifact repository
+1. Sign in at [render.com](https://render.com) with GitHub (free tier needs no card)
+2. **New +** → **Blueprint**
+3. Select the `reliefai` repository — Render reads `render.yaml` automatically
 
-```bash
-gcloud artifacts repositories create reliefai \
-  --repository-format=docker \
-  --location=asia-southeast1
-```
+### Step 2 — Set the secret
 
-### Step 3 — Build and push Docker image
+Render prompts for `GROQ_API_KEY` (marked `sync: false`, so it is never committed).
+Paste your key from [console.groq.com](https://console.groq.com). The other
+variables come from the blueprint.
+
+### Step 3 — Verify
 
 ```bash
-docker build -t asia-southeast1-docker.pkg.dev/YOUR_PROJECT_ID/reliefai/app:latest .
-docker push asia-southeast1-docker.pkg.dev/YOUR_PROJECT_ID/reliefai/app:latest
+curl https://YOUR-SERVICE.onrender.com/health
 ```
 
-### Step 4 — Deploy to Cloud Run
+Demo data seeds itself on startup — no manual seed step required.
 
-```bash
-gcloud run deploy reliefai \
-  --image asia-southeast1-docker.pkg.dev/YOUR_PROJECT_ID/reliefai/app:latest \
-  --platform managed \
-  --region asia-southeast1 \
-  --allow-unauthenticated \
-  --set-env-vars GROQ_API_KEY=your_groq_key_here,API_KEY=reliefai-demo-key \
-  --memory 1Gi \
-  --cpu 1 \
-  --timeout 300
-```
-
-### Step 5 — Seed demo data after deploy
-
-Run this once after every deployment:
-
-```bash
-curl -X POST https://YOUR-CLOUD-RUN-URL.run.app/demo/seed \
-  -H "X-API-Key: reliefai-demo-key"
-```
-
-### Step 6 — Verify deployment
-
-```bash
-curl https://YOUR-CLOUD-RUN-URL.run.app/health
-```
-
-> **Important:** SQLite database resets on every redeploy because it lives inside the container. Always run the seed command after deploying. For a production upgrade, migrate to **Google Cloud Firestore** (no schema management, scales automatically, persistent across deploys).
-
----
+> **Note:** the SQLite database lives inside the container and resets on every
+> restart, which is why the app re-seeds the Typhoon Carina scenario on boot.
+> On Render's free plan the service also sleeps after 15 minutes of inactivity;
+> the first request afterwards takes roughly 50 seconds to wake it. For a
+> production upgrade, move to Render Postgres or a managed document store.
 
 ## Environment Variables
 
@@ -315,6 +286,7 @@ curl https://YOUR-CLOUD-RUN-URL.run.app/health
 | `GROQ_API_KEY` | Your Groq API key (required) | — |
 | `API_KEY` | Dashboard authentication key | `reliefai-demo-key` |
 | `DATABASE_URL` | SQLAlchemy async DB URL | `sqlite+aiosqlite:///./relief.db` |
+| `GROQ_MODEL` | Groq model id | `openai/gpt-oss-120b` |
 
 ---
 

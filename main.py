@@ -259,7 +259,7 @@ async def health():
         "status": "ok",
         "db": "connected",
         "ai_provider": "groq",
-        "model": "llama-3.3-70b-versatile",
+        "model": os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"),
         "version": "1.0.0",
     }
 

@@ -11,7 +11,7 @@ import re
 
 from groq import AsyncGroq, RateLimitError
 
-_MODEL = "llama-3.3-70b-versatile"
+_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 # Max retries and base delay (seconds) for exponential backoff
 _MAX_RETRIES = 4

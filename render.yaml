@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: reliefai
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Set this in the Render dashboard — never committed to the repo.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: API_KEY
+        value: reliefai-demo-key
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-120b

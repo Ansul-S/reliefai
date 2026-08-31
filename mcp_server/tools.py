@@ -108,6 +108,20 @@ def _broadcast_to_dict(broadcast: Any) -> Dict[str, Any]:
     }
 
 
+def _volunteer_to_dict(v: Any, hours_today: float = 0.0) -> Dict[str, Any]:
+    return {
+        "id": v.id,
+        "name": v.name,
+        "phone": v.phone,
+        "email": v.email,
+        "skills": v.skills or [],
+        "languages": v.languages or [],
+        "availability": v.availability or {},
+        "is_active": v.is_active,
+        "hours_today": hours_today,
+    }
+
+
 def _note_to_dict(note: Any) -> Dict[str, Any]:
     return {
         "id": note.id,
@@ -461,6 +475,151 @@ async def get_broadcasts(disaster_id: int) -> List[Dict[str, Any]]:
             return [_broadcast_to_dict(b) for b in broadcasts]
     except Exception as exc:
         return [{"error": str(exc)}]
+
+
+# ---------------------------------------------------------------------------
+# Situation / Disaster Tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def get_disaster_status(disaster_id: int) -> Dict[str, Any]:
+    """Get an overview of a disaster: name, type, location, severity, status, and
+    counts of supplies, critical supplies, shifts, pending tasks and overdue tasks.
+    Call this first when you need general situational awareness."""
+    try:
+        async with AsyncSessionLocal() as db:
+            disaster = await crud.get_disaster(db, disaster_id)
+            if disaster is None:
+                return {"error": f"Disaster {disaster_id} not found."}
+
+            supplies = await crud.list_supplies_by_disaster(db, disaster_id)
+            critical = await crud.get_critical_supplies(db, disaster_id)
+            shifts = await crud.list_shifts_by_disaster(db, disaster_id)
+            pending = await crud.list_tasks(db, disaster_id, status_filter="pending")
+            overdue = await crud.get_overdue_tasks(db, disaster_id)
+
+            return {
+                "id": disaster.id,
+                "name": disaster.name,
+                "type": disaster.type,
+                "location": disaster.location,
+                "severity": disaster.severity,
+                "status": disaster.status,
+                "counts": {
+                    "supplies_total": len(supplies),
+                    "critical_supplies": len(critical),
+                    "shifts": len(shifts),
+                    "pending_tasks": len(pending),
+                    "overdue_tasks": len(overdue),
+                },
+                "critical_supply_names": [s.item_name for s in critical],
+            }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# Volunteer Tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def get_volunteers(disaster_id: int) -> List[Dict[str, Any]]:
+    """List volunteers assigned to a disaster, including their skills, languages
+    and hours already worked today."""
+    try:
+        async with AsyncSessionLocal() as db:
+            volunteers = await crud.list_volunteers_by_disaster(db, disaster_id)
+            out: List[Dict[str, Any]] = []
+            for v in volunteers:
+                hours = await crud.get_volunteer_hours_today(db, v.id)
+                out.append(_volunteer_to_dict(v, hours_today=hours))
+            return out
+    except Exception as exc:
+        return [{"error": str(exc)}]
+
+
+@mcp.tool()
+async def find_available_volunteers(
+    disaster_id: int,
+    required_skills: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Find active volunteers available for assignment, optionally filtered to those
+    who have at least one of the given skills (e.g. ["medical", "logistics"]).
+    Use this before scheduling a shift to pick a suitable volunteer."""
+    try:
+        async with AsyncSessionLocal() as db:
+            volunteers = await crud.get_available_volunteers(
+                db, disaster_id, required_skills or None
+            )
+            out: List[Dict[str, Any]] = []
+            for v in volunteers:
+                hours = await crud.get_volunteer_hours_today(db, v.id)
+                out.append(_volunteer_to_dict(v, hours_today=hours))
+            return out
+    except Exception as exc:
+        return [{"error": str(exc)}]
+
+
+# ---------------------------------------------------------------------------
+# Higher-order reasoning tools
+#
+# These wrap the specialist agents that own genuine LLM domain logic
+# (multilingual translation, narrative report writing). They are imported
+# lazily to avoid a circular import: agents/__init__ imports the orchestrator,
+# which imports this module.
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def translate_and_send_broadcast(
+    disaster_id: int,
+    message: str,
+    languages: Optional[List[str]] = None,
+    channel: str = "all",
+) -> Dict[str, Any]:
+    """Translate an emergency message into multiple languages, enforce SMS length
+    limits, and save it as a broadcast. Supported language codes include
+    en, hi, ta, id, tl, ja. Use this for any public or community announcement."""
+    try:
+        from agents.comms_agent import run_comms_agent
+
+        async with AsyncSessionLocal() as db:
+            result = await run_comms_agent(
+                disaster_id,
+                message=message,
+                languages=languages or ["en", "hi", "ta", "id", "tl", "ja"],
+                channel=channel,
+                db=db,
+            )
+            await db.commit()
+            return result
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def generate_situation_report(
+    disaster_id: int,
+    report_type: str = "internal",
+) -> Dict[str, Any]:
+    """Generate a written situation report aggregating supplies, shifts, volunteers
+    and tasks. report_type must be one of: donor, authority, internal."""
+    if report_type not in {"donor", "authority", "internal"}:
+        return {
+            "error": f"Invalid report_type {report_type!r}. "
+            "Use donor, authority or internal."
+        }
+    try:
+        from agents.report_agent import run_report_agent
+
+        async with AsyncSessionLocal() as db:
+            result = await run_report_agent(disaster_id, report_type, db)
+            await db.commit()
+            return result
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 # ---------------------------------------------------------------------------

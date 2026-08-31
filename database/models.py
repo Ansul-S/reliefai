@@ -194,6 +194,16 @@ class AgentLog(Base):
     output_summary: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)  # success/error
     duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Tracing (nullable — populated by the tool-calling orchestrator)
+    model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    input_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Ordered list of {step: llm|tool, duration_ms, ...} records for one run
+    trace: Mapped[Optional[List[Any]]] = mapped_column(JSON, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

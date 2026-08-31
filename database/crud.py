@@ -587,6 +587,12 @@ async def create_log(
     status: str,
     duration_ms: int,
     disaster_id: Optional[int] = None,
+    model: Optional[str] = None,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
+    total_tokens: Optional[int] = None,
+    cost_usd: Optional[float] = None,
+    trace: Optional[List[Any]] = None,
 ) -> AgentLog:
     log = AgentLog(
         disaster_id=disaster_id,
@@ -596,6 +602,12 @@ async def create_log(
         output_summary=output_summary,
         status=status,
         duration_ms=duration_ms,
+        model=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        cost_usd=cost_usd,
+        trace=trace,
     )
     db.add(log)
     await db.flush()

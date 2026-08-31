@@ -8,3 +8,6 @@ dist/
 *.egg-info/
 .idea/
 *.log
+# Eval artifacts
+eval_report*.json
+relief_verify.db

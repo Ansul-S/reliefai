@@ -94,6 +94,7 @@ tools*, so there is only ever one implementation of each capability:
 | Database    | SQLite + SQLAlchemy      | Free  |
 | Tools       | FastMCP (20 tools)       | Free  |
 | Tests       | pytest + pytest-asyncio  | Free  |
+| Evals       | Custom harness, 5 dims   | Free  |
 | Deployment  | Render (Docker)          | Free  |
 | Repository  | GitHub                   | Free  |
 | **Total**   |                          | **$0**|
@@ -319,6 +320,86 @@ suppression, the iteration ceiling, malformed final JSON, and the API contract.
 
 ---
 
+## Evaluations
+
+Tests prove the tool loop *runs*; evals measure whether the agent's tool choices
+and answers are actually *good*. That is the property which degrades silently
+when a model is swapped, a prompt is edited, or a tool description is reworded —
+a failure mode this project has already been bitten by once, when Groq retired
+the previous model.
+
+```bash
+python -m evals                 # full suite
+python -m evals --list          # show the cases
+python -m evals --no-judge      # deterministic scorers only (free, fast)
+python -m evals --tag grounding --json report.json
+```
+
+Exit status is non-zero if any case fails, so CI can gate on it.
+
+### How a case works
+
+Each case seeds a controlled scenario into a clean database, runs the real
+orchestrator against it, and scores the outcome. Ground truth is read back out
+of the database at run time rather than hardcoded, so a scenario and its
+expectations cannot drift apart.
+
+### The five dimensions
+
+| Dimension | Kind | What it catches |
+|-----------|------|-----------------|
+| `tool_selection` | deterministic | Missing the right tool, or reaching for a forbidden one |
+| `grounding` | deterministic | **Hallucinated numbers** — every figure stated must trace to tool output |
+| `side_effects` | deterministic | Writes on read-only commands; missing writes on action commands |
+| `loop_health` | deterministic | Failed tool calls, duplicate calls, runaway iteration counts |
+| `judge` | LLM | Relevance and operational usefulness, which the others cannot see |
+
+Four of the five cost nothing and never flake. `--no-judge` runs only those.
+
+The grounding scorer accepts arithmetic the agent legitimately performs on real
+data — stating a 1600-liter shortfall when the tools returned 2000 needed and
+400 available is grounded, not invented — but rejects any figure it cannot
+derive from what the tools actually returned.
+
+### What the dataset covers
+
+Beyond the happy path, the cases deliberately include:
+
+- **No-false-alarm**: every supply is well stocked; an agent that pattern-matches
+  "disaster" to "shortage" invents a crisis and fails.
+- **Fabrication probe**: asks about helicopters and boats, which the database
+  does not track at all. The correct answer is to say so.
+- **Read-only discipline**: a plain count question must not write to any table.
+- **Precision**: a roster where one volunteer is inactive and two lack the
+  requested skill, so a sloppy answer names the wrong people.
+
+The scorers themselves are unit-tested (`tests/test_eval_scorers.py`) against
+known-bad agent behaviour. An eval harness that cannot fail is worse than none —
+it manufactures confidence.
+
+### Budgeting a run
+
+Groq's free tier allows **8,000 tokens per minute** and **200,000 per day**. A
+single case costs roughly 5k-12k tokens, so a full 12-case run is around 150k —
+most of a day's budget, and enough to keep the suite in rate-limit backoff
+throughout. In practice:
+
+```bash
+python -m evals --no-judge --delay 20     # ~25% cheaper, paced to the limiter
+python -m evals --tag grounding           # run one slice at a time
+python -m evals --limit 4                 # smoke test
+```
+
+Runs are reported honestly against these limits. A case that fails because the
+provider rate-limited it is marked `[ERR ]`, excluded from the pass rate, and
+never counted as a quality regression — and the suite stops early rather than
+manufacturing a page of identical failures once the daily budget is gone.
+
+Exit codes: `0` all assessed cases passed, `1` a case genuinely failed, `3`
+nothing failed but some cases could not be assessed.
+
+---
+
 ## Project Structure
 
 ```
@@ -350,10 +431,17 @@ reliefai/
 ├── static/                    # Frontend
 │   └── index.html             # Single-file ops dashboard
 │
+├── evals/                     # Evaluation harness
+│   ├── scenarios.py           # Deterministic seeded worlds
+│   ├── dataset.py             # Golden cases + expectations
+│   ├── scorers.py             # 4 deterministic + 1 LLM judge
+│   └── runner.py              # Execution and reporting
+│
 ├── tests/                     # pytest suite
 │   ├── conftest.py            # Test DB + scripted fake LLM
 │   ├── test_tool_registry.py  # Schemas, dispatch, failure modes
-│   └── test_orchestrator_loop.py  # The tool-calling loop
+│   ├── test_orchestrator_loop.py  # The tool-calling loop
+│   └── test_eval_scorers.py   # The scorers reject bad behaviour
 │
 ├── main.py                    # FastAPI application
 ├── pytest.ini                 # Test configuration

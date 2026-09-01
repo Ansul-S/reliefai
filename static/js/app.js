@@ -178,6 +178,8 @@ function setText(id, value) {
 }
 
 async function loadOverview() {
+  const ov = document.getElementById('overview');
+  ov?.classList.add('kpi-loading');
   try {
     const data = await apiCall('GET', `/disasters/${currentDisasterId}`);
     const d = data.data || {};
@@ -201,6 +203,8 @@ async function loadOverview() {
       `<span class="kpi-dot dot-${key}"></span><span>${escHtml(word)}</span>`;
   } catch (e) {
     showToast('Failed to load overview: ' + e.message, 'error');
+  } finally {
+    ov?.classList.remove('kpi-loading');
   }
   loadAttention();
 }
@@ -425,9 +429,18 @@ async function triggerGapDetection() {
 }
 
 // ── SUPPLIES ───────────────────────────────────────────────────────
+function supplySkeleton(count = 6) {
+  return Array.from({ length: count }, () => `<div class="skeleton-card">
+    <div class="skeleton skeleton-line w-60"></div>
+    <div class="skeleton skeleton-bar"></div>
+    <div class="skeleton skeleton-line w-40"></div>
+    <div class="skeleton skeleton-line w-30"></div>
+  </div>`).join('');
+}
+
 async function loadSupplies() {
   if (!currentDisasterId) return;
-  setHtml('supply-grid', '<div style="grid-column:1/-1;text-align:center;padding:40px;"><div class="spinner-inline"></div></div>');
+  setHtml('supply-grid', supplySkeleton());
   try {
     const data = await apiCall('GET', `/disasters/${currentDisasterId}/supplies`);
     const supplies = data.data || [];

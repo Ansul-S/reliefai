@@ -1378,6 +1378,87 @@ input[type=date] {
   color: var(--text-muted);
 }
 
+/* Section actions live in the header beside the title. The assessment button
+   used to sit alone under the grid, which read as an orphan and left the rest
+   of the view empty. */
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+.btn-assess {
+  background: var(--warn);
+  color: #1a1204;
+  border: 1px solid var(--warn);
+  font-weight: 600;
+}
+.btn-assess:hover { background: #e89310; border-color: #e89310; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   MOTION
+
+   Two jobs only: tell the user a fetch is in flight, and make a section change
+   feel like a change of view rather than a repaint. Both are suppressed under
+   prefers-reduced-motion by the block at the end of this file.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.section.active { animation: section-in 0.28s cubic-bezier(0.2, 0.6, 0.2, 1); }
+
+@keyframes section-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Skeletons mirror the shape of what is loading, so the layout does not jump
+   when the real rows arrive. */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--card2);
+  border-radius: var(--radius);
+}
+
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.045),
+    transparent
+  );
+  animation: shimmer 1.4s infinite;
+}
+
+@keyframes shimmer { to { transform: translateX(100%); } }
+
+.skeleton-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border2);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.skeleton-line { height: 12px; }
+.skeleton-line.w-60 { width: 60%; }
+.skeleton-line.w-40 { width: 40%; }
+.skeleton-line.w-30 { width: 30%; }
+.skeleton-bar { height: 6px; border-radius: 3px; }
+
+/* Values fade in rather than snapping, which makes an auto-refresh legible
+   instead of looking like a flicker. */
+.kpi-value, .kpi-hero-value { transition: opacity 0.25s ease; }
+.kpi-loading .kpi-value,
+.kpi-loading .kpi-hero-value { opacity: 0.35; }
+
 /* ═══════════════════════════════════════════════════════════════════════
    RESPONSIVE
 

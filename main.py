@@ -90,6 +90,12 @@ app.mount("/static", StaticFiles(directory=_STATIC_DIR, html=True), name="static
 
 @app.get("/", include_in_schema=False)
 async def root():
+    """The landing page. The dashboard lives at /dashboard."""
+    return RedirectResponse(url="/static/landing.html")
+
+
+@app.get("/dashboard", include_in_schema=False)
+async def dashboard():
     return RedirectResponse(url="/static/index.html")
 
 

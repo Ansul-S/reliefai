@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>ReliefAI — An agent that coordinates disaster relief</title>
+<meta name="description" content="An open-source AI orchestrator for disaster relief operations. Twenty tools over MCP, five specialist agents, and an evaluation harness that scores every answer against the database it came from."/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,400;6..96,500&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="/static/css/landing.css?v=3"/>
+</head>
+<body>
+
+<header class="nav">
+  <a class="nav-brand" href="/">
+    <span class="nav-mark">R</span>
+    <span>ReliefAI</span>
+  </a>
+  <nav class="nav-links">
+    <a href="/docs">API</a>
+    <a href="https://github.com/Ansul-S/reliefai" rel="noopener">Source</a>
+    <a class="nav-cta" href="/dashboard">Dashboard <span aria-hidden="true">&rarr;</span></a>
+  </nav>
+</header>
+
+<main>
+
+  <!-- ─────────────────────────────────────────────── HERO ─── -->
+  <section class="hero">
+    <div class="hero-copy">
+      <p class="microlabel">Open source &middot; MIT License</p>
+      <h1 class="hero-title">
+        The agent<br/>
+        that runs<br/>
+        <em>the response</em>
+      </h1>
+      <p class="hero-sub">
+        A relief coordinator types what happened. ReliefAI reads the operation
+        database, decides which tools to call, and does the work — schedules the
+        shift, files the procurement task, sends the broadcast in six languages.
+      </p>
+      <div class="hero-actions">
+        <a class="btn-primary" href="/dashboard">Open the dashboard</a>
+        <a class="btn-ghost" href="/docs">Read the API</a>
+      </div>
+      <p class="microlabel hero-foot">Groq &middot; openai/gpt-oss-120b</p>
+    </div>
+
+    <!-- Concentric arcs radiating from the operation centre: a broadcast going
+         out, and the shape of a response spreading from one point. Drawn rather
+         than fetched so the page has no image dependency. -->
+    <div class="hero-art" aria-hidden="true">
+      <svg viewBox="0 0 480 480" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <radialGradient id="fade" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#E24B4A" stop-opacity="1"/>
+            <stop offset="55%" stop-color="#E24B4A" stop-opacity="0.5"/>
+            <stop offset="100%" stop-color="#E24B4A" stop-opacity="0"/>
+          </radialGradient>
+          <mask id="softmask">
+            <rect width="480" height="480" fill="url(#fade)"/>
+          </mask>
+        </defs>
+        <g mask="url(#softmask)" stroke="#E24B4A" stroke-width="1">
+          <circle cx="240" cy="240" r="34"/>
+          <circle cx="240" cy="240" r="62"/>
+          <circle cx="240" cy="240" r="94"/>
+          <circle cx="240" cy="240" r="130"/>
+          <circle cx="240" cy="240" r="170"/>
+          <circle cx="240" cy="240" r="214"/>
+          <g class="spokes">
+            <path d="M240 240 L240 8"/>   <path d="M240 240 L404 76"/>
+            <path d="M240 240 L472 240"/> <path d="M240 240 L404 404"/>
+            <path d="M240 240 L240 472"/> <path d="M240 240 L76 404"/>
+            <path d="M240 240 L8 240"/>   <path d="M240 240 L76 76"/>
+          </g>
+        </g>
+        <circle cx="240" cy="240" r="7" fill="#E24B4A"/>
+        <circle class="pulse" cx="240" cy="240" r="34" stroke="#E24B4A" stroke-width="1.5"/>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────────── THE FACTS ─── -->
+  <div class="facts-wrap">
+  <section class="facts">
+    <div class="fact">
+      <div class="fact-value">20</div>
+      <div class="microlabel">Tools over MCP</div>
+    </div>
+    <div class="fact">
+      <div class="fact-value">5</div>
+      <div class="microlabel">Specialist agents</div>
+    </div>
+    <div class="fact">
+      <div class="fact-value">6</div>
+      <div class="microlabel">Broadcast languages</div>
+    </div>
+    <div class="fact">
+      <div class="fact-value">12</div>
+      <div class="microlabel">Graded eval cases</div>
+    </div>
+  </section>
+  </div>
+
+  <!-- ────────────────────────────────────────── CAPABILITY ─── -->
+  <section class="band">
+    <p class="microlabel">What it actually does</p>
+    <h2 class="band-title">Not a chatbot with a database attached</h2>
+
+    <div class="cards">
+      <article class="lcard">
+        <h3>It picks its own tools</h3>
+        <p>
+          The orchestrator runs a real function-calling loop against twenty tools
+          served over MCP — supply levels, volunteer availability, shift gaps,
+          tasks, notes, broadcasts. Nothing is hard-coded to a command; the model
+          decides what to call and when it has enough to answer.
+        </p>
+      </article>
+      <article class="lcard">
+        <h3>It writes to the operation</h3>
+        <p>
+          Scheduling a shift creates a shift. Filing a procurement task creates a
+          task. Sending a broadcast translates it into six languages and records
+          it. The loop is bounded, duplicate calls are refused, and every call
+          lands in a trace you can read back.
+        </p>
+      </article>
+      <article class="lcard">
+        <h3>It is graded on the numbers it states</h3>
+        <p>
+          A twelve-case golden dataset scores every run on five dimensions — tool
+          selection, grounding, side effects, loop health, and an LLM judge. The
+          grounding scorer checks each figure in the answer against what the
+          tools actually returned, so an invented stock level fails even when the
+          prose reads well.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <!-- ──────────────────────────────────────────────── LOOP ─── -->
+  <section class="band band-tight">
+    <p class="microlabel">The loop</p>
+    <ol class="steps">
+      <li><span class="step-n">01</span><span><strong>Read the command.</strong> A coordinator describes what happened, in their own words.</span></li>
+      <li><span class="step-n">02</span><span><strong>Choose a tool.</strong> The model calls one of twenty, with arguments it composed itself.</span></li>
+      <li><span class="step-n">03</span><span><strong>Look at the result.</strong> Real rows come back from the operation database.</span></li>
+      <li><span class="step-n">04</span><span><strong>Decide again.</strong> Call another tool, or stop — bounded, with repeats refused.</span></li>
+      <li><span class="step-n">05</span><span><strong>Answer from the data.</strong> Summary, alerts, and next actions, traceable to the calls that produced them.</span></li>
+    </ol>
+  </section>
+
+  <!-- ───────────────────────────────────────────────── CTA ─── -->
+  <section class="cta">
+    <h2 class="cta-title">See it run</h2>
+    <p class="cta-sub">The dashboard is live, seeded with a working operation.</p>
+    <a class="btn-primary btn-lg" href="/dashboard">Open the dashboard</a>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <span>ReliefAI &middot; MIT License</span>
+  <span class="foot-mono">Built with FastAPI, SQLAlchemy and MCP</span>
+</footer>
+
+<script>
+// Reveal-on-scroll. Elements are only hidden once this runs, so a page with
+// scripting off or blocked shows everything rather than nothing.
+(function () {
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var targets = document.querySelectorAll('.hero-copy, .facts-wrap, .band, .cta');
+  if (reduce || !('IntersectionObserver' in window)) return;
+
+  targets.forEach(function (el) { el.classList.add('reveal'); });
+
+  // Stagger the members of any group so a row of cards arrives as one gesture.
+  document.querySelectorAll('.cards, .steps').forEach(function (group) {
+    group.classList.add('reveal-group');
+    Array.prototype.forEach.call(group.children, function (child, i) {
+      child.style.setProperty('--d', Math.min(i * 70, 350) + 'ms');
+    });
+  });
+
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (!entry.isIntersecting) return;
+      entry.target.classList.add('shown');
+      io.unobserve(entry.target);   // reveal once, never re-hide on scroll up
+    });
+  }, { rootMargin: '0px 0px -12% 0px', threshold: 0.05 });
+
+  targets.forEach(function (el) { io.observe(el); });
+})();
+</script>
+</body>
+</html>

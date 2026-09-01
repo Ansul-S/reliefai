@@ -1,0 +1,333 @@
+/*
+ * ReliefAI landing page.
+ *
+ * The dashboard's palette is reused deliberately: the two pages should read as
+ * one product. What is borrowed from editorial design is the TYPOGRAPHY, not
+ * the colour field — a display serif at the top of a scale that runs to 11px
+ * letterspaced mono at the bottom, and whitespace that is composed rather than
+ * left over.
+ *
+ * Note the accent is used sparingly here. In the product, red means "critical";
+ * a full-bleed red landing page would spend a signal the dashboard needs.
+ */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0b0d14;
+  --bg2: #111420;
+  --card: #141825;
+  --border: #1e2438;
+  --border2: #252a40;
+  --text: #e2e5f0;
+  --text-muted: #858db0;
+  --text-dim: #6b7290;
+  --accent: #E24B4A;
+
+  --sans: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+  --serif: 'Bodoni Moda', 'Didot', 'Times New Roman', serif;
+
+  --shell: 1200px;
+  --gut: clamp(20px, 5vw, 72px);
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; text-decoration: none; }
+
+.microlabel {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* ─── NAV ──────────────────────────────────────────────────────────────── */
+
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 18px var(--gut);
+  background: rgba(11, 13, 20, 0.82);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+
+.nav-brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -0.01em; }
+
+.nav-mark {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.nav-links { display: flex; align-items: center; gap: clamp(14px, 3vw, 32px); font-size: 14px; }
+.nav-links a { color: var(--text-muted); transition: color 0.15s ease; }
+.nav-links a:hover { color: var(--text); }
+
+.nav-cta {
+  color: var(--text) !important;
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  padding: 7px 15px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.nav-cta:hover { border-color: var(--accent); background: rgba(226, 75, 74, 0.08); }
+
+/* ─── HERO ─────────────────────────────────────────────────────────────── */
+
+.hero {
+  max-width: var(--shell);
+  margin: 0 auto;
+  padding: clamp(48px, 9vw, 120px) var(--gut) clamp(40px, 7vw, 96px);
+  display: grid;
+  grid-template-columns: 1.12fr 0.88fr;
+  gap: clamp(32px, 6vw, 72px);
+  align-items: center;
+}
+
+/*
+ * The whole point of the type scale: ~96px display against 11px mono is a
+ * ~9:1 range. The dashboard's old 18px-against-14px was 1.29:1, which is what
+ * made it read as undesigned.
+ */
+.hero-title {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: clamp(42px, 6.8vw, 82px);
+  line-height: 0.98;
+  letter-spacing: -0.015em;
+  margin: 18px 0 26px;
+}
+.hero-title em { font-style: italic; color: var(--accent); }
+
+.hero-sub {
+  max-width: 46ch;
+  color: var(--text-muted);
+  font-size: clamp(15px, 1.3vw, 17px);
+}
+
+.hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 30px 0 26px; }
+
+.btn-primary,
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 13px 24px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.btn-primary { background: var(--accent); color: #fff; border: 1px solid var(--accent); }
+.btn-primary:hover { background: #c73c3b; transform: translateY(-1px); }
+
+.btn-ghost { border: 1px solid var(--border2); color: var(--text); }
+.btn-ghost:hover { border-color: var(--text-dim); transform: translateY(-1px); }
+
+.btn-lg { padding: 16px 32px; font-size: 15px; }
+
+.hero-foot { margin-top: 4px; }
+
+.hero-art { position: relative; }
+.hero-art svg { width: 100%; height: auto; display: block; }
+.hero-art .spokes { opacity: 0.55; }
+
+.pulse { transform-origin: 240px 240px; animation: pulse 4.5s ease-out infinite; }
+@keyframes pulse {
+  0%   { transform: scale(0.55); opacity: 0.85; }
+  70%  { transform: scale(2.9);  opacity: 0; }
+  100% { transform: scale(2.9);  opacity: 0; }
+}
+
+/* ─── FACTS ────────────────────────────────────────────────────────────── */
+
+/* The grid paints its own gaps by showing a border-coloured background
+   through 1px gutters, so its horizontal page padding has to live on a wrapper
+   — on the grid itself that padding became two phantom cells at the edges. */
+.facts-wrap {
+  max-width: var(--shell);
+  margin: 0 auto;
+  padding: 0 var(--gut);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.fact { background: var(--bg); padding: clamp(20px, 3vw, 32px); }
+
+/* Proportional figures: at this size tabular-nums would make these look loose. */
+.fact-value {
+  font-family: var(--sans);
+  font-size: clamp(30px, 4vw, 46px);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  margin-bottom: 8px;
+}
+
+/* ─── BANDS ────────────────────────────────────────────────────────────── */
+
+.band {
+  max-width: var(--shell);
+  margin: 0 auto;
+  padding: clamp(64px, 10vw, 130px) var(--gut) 0;
+}
+.band-tight { padding-top: clamp(48px, 7vw, 90px); }
+
+.band-title {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: clamp(30px, 4.4vw, 54px);
+  line-height: 1.08;
+  letter-spacing: -0.01em;
+  margin: 14px 0 clamp(32px, 5vw, 56px);
+  max-width: 18ch;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: clamp(16px, 2.4vw, 28px);
+}
+
+.lcard {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: clamp(22px, 2.6vw, 30px);
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+.lcard:hover { border-color: var(--border2); transform: translateY(-3px); }
+
+.lcard h3 { font-size: 18px; font-weight: 600; margin-bottom: 12px; letter-spacing: -0.01em; }
+.lcard p { color: var(--text-muted); font-size: 15px; }
+
+/* ─── STEPS ────────────────────────────────────────────────────────────── */
+
+.steps { list-style: none; margin-top: 28px; border-top: 1px solid var(--border); }
+
+.steps li {
+  display: flex;
+  align-items: baseline;
+  gap: clamp(16px, 3vw, 40px);
+  padding: 20px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 15px;
+}
+.steps strong { color: var(--text); font-weight: 600; }
+
+.step-n {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* ─── CTA + FOOT ───────────────────────────────────────────────────────── */
+
+.cta {
+  max-width: var(--shell);
+  margin: 0 auto;
+  padding: clamp(72px, 11vw, 150px) var(--gut) clamp(56px, 8vw, 110px);
+  text-align: center;
+}
+
+.cta-title {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: clamp(36px, 6vw, 72px);
+  line-height: 1.02;
+  letter-spacing: -0.015em;
+}
+
+.cta-sub { color: var(--text-muted); margin: 14px 0 32px; }
+
+.foot {
+  border-top: 1px solid var(--border);
+  padding: 26px var(--gut);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.foot-mono { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; }
+
+/* ─── RESPONSIVE ───────────────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+  .hero { grid-template-columns: 1fr; }
+  /* Art first would push the headline below the fold on a phone. */
+  .hero-art { order: 2; max-width: 380px; margin: 0 auto; opacity: 0.9; }
+  .hero-copy { order: 1; }
+  .facts { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 520px) {
+  .nav-links a:not(.nav-cta) { display: none; }
+  .btn-primary, .btn-ghost { width: 100%; justify-content: center; }
+}
+
+/* ─── SCROLL REVEAL ────────────────────────────────────────────────────
+   Sections rise into place once, on first intersection. The initial state is
+   applied by script rather than in CSS: if JavaScript never runs, nothing is
+   ever hidden, so the page degrades to plain visible content.
+   ────────────────────────────────────────────────────────────────────── */
+
+.reveal {
+  opacity: 0;
+  transform: translateY(18px);
+  transition: opacity 0.7s cubic-bezier(0.2, 0.6, 0.2, 1),
+              transform 0.7s cubic-bezier(0.2, 0.6, 0.2, 1);
+  will-change: opacity, transform;
+}
+.reveal.shown { opacity: 1; transform: none; }
+
+/* A short stagger inside a group reads as one movement rather than five. */
+.reveal-group > * { transition-delay: var(--d, 0ms); }
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal { opacity: 1 !important; transform: none !important; }
+
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

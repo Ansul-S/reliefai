@@ -44,7 +44,7 @@ POST /disasters/{id}/command
                 │ mcp.call_tool(name, args)
                 ▼
      ┌──────────────────────┐
-     │   MCP Tool Server    │   20 tools — FastMCP
+     │   MCP Tool Server    │   21 tools — FastMCP
      │  mcp_server/tools.py │   situation | volunteers | shifts
      │                      │   supplies | tasks | notes | comms
      └──────────┬───────────┘
@@ -99,7 +99,7 @@ tools*, so there is only ever one implementation of each capability:
 | Agent loop  | Groq native tool calling | Free  |
 | Backend     | FastAPI + Python 3.11    | Free  |
 | Database    | SQLite + SQLAlchemy      | Free  |
-| Tools       | FastMCP (20 tools)       | Free  |
+| Tools       | FastMCP (21 tools)       | Free  |
 | Tests       | pytest + pytest-asyncio  | Free  |
 | Evals       | Custom harness, 5 dims   | Free  |
 | Deployment  | Render (Docker)          | Free  |
@@ -298,7 +298,7 @@ Run these in order after seeding. All use `POST /disasters/1/command` with `X-AP
 
 ## Tool Inventory
 
-All 20 tools are defined once, in `mcp_server/tools.py`, and registered on a
+All 21 tools are defined once, in `mcp_server/tools.py`, and registered on a
 FastMCP server. The orchestrator reaches them through `mcp.call_tool()` — the
 same path an external MCP client would use — so there is no second copy of any
 tool implementation.

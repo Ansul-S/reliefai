@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,400;6..96,500&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
-<link rel="stylesheet" href="/static/css/landing.css?v=3"/>
+<link rel="stylesheet" href="/static/css/landing.css?v=4"/>
 </head>
 <body>
 
@@ -86,7 +86,7 @@
   <div class="facts-wrap">
   <section class="facts">
     <div class="fact">
-      <div class="fact-value">20</div>
+      <div class="fact-value">21</div>
       <div class="microlabel">Tools over MCP</div>
     </div>
     <div class="fact">
@@ -113,10 +113,12 @@
       <article class="lcard">
         <h3>It picks its own tools</h3>
         <p>
-          The orchestrator runs a real function-calling loop against twenty tools
+          The orchestrator runs a real function-calling loop against twenty-one tools
           served over MCP — supply levels, volunteer availability, shift gaps,
-          tasks, notes, broadcasts. Nothing is hard-coded to a command; the model
-          decides what to call and when it has enough to answer.
+          tasks, notes, broadcasts — and a live weather forecast, the one tool
+          that reads from outside the operation's own database. Nothing is
+          hard-coded to a command; the model decides what to call and when it
+          has enough to answer.
         </p>
       </article>
       <article class="lcard">
@@ -146,7 +148,7 @@
     <p class="microlabel">The loop</p>
     <ol class="steps">
       <li><span class="step-n">01</span><span><strong>Read the command.</strong> A coordinator describes what happened, in their own words.</span></li>
-      <li><span class="step-n">02</span><span><strong>Choose a tool.</strong> The model calls one of twenty, with arguments it composed itself.</span></li>
+      <li><span class="step-n">02</span><span><strong>Choose a tool.</strong> The model calls one of twenty-one, with arguments it composed itself.</span></li>
       <li><span class="step-n">03</span><span><strong>Look at the result.</strong> Real rows come back from the operation database.</span></li>
       <li><span class="step-n">04</span><span><strong>Decide again.</strong> Call another tool, or stop — bounded, with repeats refused.</span></li>
       <li><span class="step-n">05</span><span><strong>Answer from the data.</strong> Summary, alerts, and next actions, traceable to the calls that produced them.</span></li>

@@ -33,6 +33,12 @@ _EVAL_DB = Path(os.environ.get("RELIEFAI_EVAL_DB", _DEFAULT_EVAL_DB))
 # Must happen before `database` is imported anywhere in the process.
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_EVAL_DB}"
 
+# The weather tool is the one tool that reaches outside the database. A live
+# forecast would make scored runs non-deterministic — the same case would grade
+# differently depending on the weather in Manila — so evals always use the
+# fixed offline fixture. Set RELIEFAI_WEATHER_MODE explicitly to override.
+os.environ.setdefault("RELIEFAI_WEATHER_MODE", "offline")
+
 EVAL_DB_PATH = _EVAL_DB
 
 __all__ = ["EVAL_DB_PATH"]

@@ -14,6 +14,7 @@ from fastmcp import FastMCP
 
 from database import AsyncSessionLocal
 import database.crud as crud
+from mcp_server.weather import get_forecast
 
 # ---------------------------------------------------------------------------
 # FastMCP app
@@ -620,6 +621,37 @@ async def generate_situation_report(
             return result
     except Exception as exc:
         return {"error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# External conditions
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def get_weather_forecast(disaster_id: int) -> Dict[str, Any]:
+    """Get the 24-hour weather forecast for a disaster's location.
+
+    Use this when weather could affect the response — outdoor shifts, shelter
+    capacity, tarpaulin or blanket demand, road access, or the timing of a
+    distribution. Returns total expected rainfall, peak wind, when rain starts,
+    and the next six hours hour by hour.
+
+    This is the only tool that reads from outside the operation database, so it
+    can be unavailable. When "available" is false, tell the user no forecast
+    could be retrieved rather than estimating conditions yourself.
+    """
+    try:
+        async with AsyncSessionLocal() as db:
+            disaster = await crud.get_disaster(db, disaster_id)
+            if not disaster:
+                return {"error": f"Disaster {disaster_id} not found."}
+            location = disaster.location
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    forecast = await get_forecast(location)
+    return {"disaster_id": disaster_id, **forecast}
 
 
 # ---------------------------------------------------------------------------

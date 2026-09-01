@@ -1,13 +1,74 @@
-__pycache__/
-*.pyc
+# ── Secrets ───────────────────────────────────────────────────────────────
+# GROQ_API_KEY lives here. render.yaml marks it sync:false so it is set in the
+# Render dashboard instead, never committed.
 .env
-*.db
-venv/
-.DS_Store
+.env.*
+!.env.example
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
 dist/
+.eggs/
+*.egg
 *.egg-info/
-.idea/
-*.log
-# Eval artifacts
-eval_report*.json
+
+# ── Virtual environments ──────────────────────────────────────────────────
+# This project's venv is `venv/`. Its console scripts carry shebangs pointing
+# at the pre-rename path, so tools are run as `venv/bin/python -m <tool>`.
+venv/
+.venv/
+env/
+ENV/
+
+# ── Test and lint caches ──────────────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# ── SQLite ────────────────────────────────────────────────────────────────
+# relief.db is seeded demo data, rebuildable with `POST /demo/seed` or
+# seed_demo.py. The -wal/-shm/-journal sidecars appear while the app is running.
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
 relief_verify.db
+
+# ── Eval artifacts ────────────────────────────────────────────────────────
+# Reports are a point-in-time measurement against a model that changes, so they
+# are reproduced by re-running rather than stored.
+eval_report*.json
+
+# ── Local working notes (deliberately untracked) ──────────────────────────
+# Session handoff and agent guidance. Local to this machine by choice — the
+# durable project documentation is README.md and CHANGELOG.md.
+CLAUDE.md
+NEXT_SESSION.md
+.claude/settings.local.json
+
+# ── Editors and OS ────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+
+# ── Logs ──────────────────────────────────────────────────────────────────
+*.log

@@ -21,6 +21,13 @@ from agents._groq_client import _call_groq
 # of a value the tools actually returned (covers rounding and unit prose).
 _NUMERIC_TOLERANCE = 0.005
 
+# A leading "-" counts as a minus sign only when it does not follow a digit or a
+# decimal point. Without the lookbehind the hyphens in an ISO-8601 timestamp read
+# as negation: "2026-08-30" yields -8 and -30, so a date the agent correctly
+# echoes back in prose ("due Aug 30 at 08:00" -> +8, +30) fails to match the
+# tool output it came from and is reported as a hallucination.
+_NUMBER_RE = re.compile(r"(?<![\d.])-?\d+(?:\.\d+)?")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -44,7 +51,7 @@ def _iter_numbers(value: Any) -> Iterable[float]:
         for v in value:
             yield from _iter_numbers(v)
     elif isinstance(value, str):
-        for match in re.findall(r"-?\d+(?:\.\d+)?", value):
+        for match in _NUMBER_RE.findall(value):
             try:
                 yield float(match)
             except ValueError:
@@ -112,7 +119,7 @@ def _claimed_numbers(text: str) -> List[float]:
     cleaned = re.sub(r"(?<=\d),(?=\d{3}\b)", "", cleaned)
 
     out: List[float] = []
-    for raw in re.findall(r"-?\d+(?:\.\d+)?", cleaned):
+    for raw in _NUMBER_RE.findall(cleaned):
         try:
             value = float(raw)
         except ValueError:

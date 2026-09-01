@@ -80,6 +80,46 @@ def test_grounding_does_not_blindly_excuse_year_like_quantities():
     assert 1950.0 in result["unverified"]
 
 
+TASK_RESULTS = {
+    "get_overdue_tasks": [
+        {
+            "id": 1,
+            "title": "Clear access road",
+            "due_at": "2026-08-30T08:00:00",
+            "status": "pending",
+        }
+    ]
+}
+
+
+def test_grounding_accepts_a_date_restated_in_prose():
+    """
+    Regression: the hyphens in an ISO-8601 timestamp are not minus signs.
+
+    Parsing "2026-08-30" as 2026, -8, -30 put the wrong sign on every date
+    component in the grounded set, so an agent that correctly echoed a due date
+    back to the operator was reported as hallucinating it.
+    """
+    result = score_grounding(
+        "Task 1 'Clear access road' was due 30 August at 08:00 and is pending.",
+        TASK_RESULTS,
+    )
+    assert result["passed"], result["detail"]
+
+
+def test_grounding_still_rejects_an_invented_date():
+    result = score_grounding(
+        "Task 1 was due 14 July at 19:00.", TASK_RESULTS
+    )
+    assert not result["passed"], result["detail"]
+
+
+def test_grounding_still_reads_genuine_negatives_as_negative():
+    result = score_grounding("Stock moved by -30 units.", TASK_RESULTS)
+    assert not result["passed"], result["detail"]
+    assert -30.0 in result["unverified"]
+
+
 def test_grounding_passes_when_no_numeric_claims():
     result = score_grounding("Supplies look adequate.", SUPPLY_RESULTS)
     assert result["passed"]
@@ -213,6 +253,31 @@ def test_loop_health_flags_a_run_that_called_no_tools():
 # ---------------------------------------------------------------------------
 # Dataset sanity
 # ---------------------------------------------------------------------------
+
+
+def test_grounding_ignores_forward_looking_recommendations():
+    """
+    Regression: recommendations are proposals, not claims about the data.
+
+    ``next_recommended_actions`` carries planning horizons ("over the next 24-48
+    hours") and suggested quantities ("pre-position an additional 10-15 units").
+    Those cannot trace back to tool output by construction, so scoring them for
+    grounding failed correct answers. The LLM judge still sees them in full.
+    """
+    from evals.runner import _answer_text, _claim_text
+
+    result = {
+        "orchestrator_summary": "Water is at 400 of 2000 liters.",
+        "alerts": ["Drinking Water is critical."],
+        "next_recommended_actions": [
+            "Monitor consumption over the next 24-48 hours",
+            "Pre-position an additional 10-15 units as a buffer",
+        ],
+    }
+
+    assert score_grounding(_claim_text(result), SUPPLY_RESULTS)["passed"]
+    # The full text is still available for keyword expectations.
+    assert "24-48 hours" in _answer_text(result)
 
 
 def test_every_case_points_at_a_real_scenario():

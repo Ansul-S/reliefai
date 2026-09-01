@@ -72,9 +72,29 @@ async def _row_counts() -> Dict[str, int]:
 
 
 def _answer_text(result: Dict[str, Any]) -> str:
+    """Everything the agent said, for keyword expectations."""
     parts = [str(result.get("orchestrator_summary", ""))]
     parts += [str(a) for a in result.get("alerts", [])]
     parts += [str(a) for a in result.get("next_recommended_actions", [])]
+    return "\n".join(parts)
+
+
+def _claim_text(result: Dict[str, Any]) -> str:
+    """
+    Only the parts of the answer that assert something about retrieved data.
+
+    ``next_recommended_actions`` is deliberately excluded. Those are, by the
+    orchestrator's own contract, forward-looking proposals — "monitor over the
+    next 24-48 hours", "pre-position an additional 10-15 units". Their numbers
+    are planning horizons and suggested quantities, so by construction they
+    cannot trace back to tool output, and feeding them to the grounding scorer
+    manufactured false hallucination reports on otherwise-correct answers.
+
+    Recommendations are not unpoliced: the LLM judge receives them in full and
+    scores them for grounding and usefulness.
+    """
+    parts = [str(result.get("orchestrator_summary", ""))]
+    parts += [str(a) for a in result.get("alerts", [])]
     return "\n".join(parts)
 
 
@@ -159,7 +179,7 @@ async def run_case(case: EvalCase, *, use_judge: bool = True) -> Dict[str, Any]:
         }
     dimensions["tool_selection"] = selection
 
-    dimensions["grounding"] = score_grounding(answer_text, tool_results)
+    dimensions["grounding"] = score_grounding(_claim_text(result), tool_results)
 
     dimensions["side_effects"] = score_side_effects(
         before,

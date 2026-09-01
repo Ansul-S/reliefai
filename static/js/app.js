@@ -74,6 +74,7 @@ function showSection(name) {
 function loadSection(name) {
   if (!currentDisasterId) return;
   switch(name) {
+    case 'command':    loadOverview();    break;
     case 'volunteers': loadVolunteers(); break;
     case 'supplies':   loadSupplies();   break;
     case 'broadcasts': loadBroadcasts(); break;
@@ -165,6 +166,83 @@ document.getElementById('disaster-select').addEventListener('change', function()
   document.getElementById('disaster-name').textContent = cleanName;
   loadSection(currentSection);
 });
+
+// ── OPERATION OVERVIEW ─────────────────────────────────────────────
+// Every figure below is read from the API. GET /disasters/{id} already returns
+// the counts the tiles need, so the overview costs one request; the attention
+// lists reuse the supplies and tasks endpoints.
+
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+async function loadOverview() {
+  try {
+    const data = await apiCall('GET', `/disasters/${currentDisasterId}`);
+    const d = data.data || {};
+    const critical = d.critical_supplies ?? 0;
+
+    setText('kpi-critical', critical);
+    setText('kpi-volunteers', d.volunteers_assigned ?? 0);
+    setText('kpi-tasks', d.tasks_open ?? 0);
+    setText('kpi-shifts', d.shifts_today ?? 0);
+    setText('kpi-supplies', d.supplies_total ?? 0);
+
+    // Status rides in a dot plus a word, never in the colour of the number.
+    const key = critical === 0 ? 'ok' : critical <= 2 ? 'warn' : 'crit';
+    const word = critical === 0
+      ? 'All supplies above threshold'
+      : critical === 1
+        ? '1 item below 30% of need'
+        : `${critical} items below 30% of need`;
+    const status = document.getElementById('kpi-critical-status');
+    if (status) status.innerHTML =
+      `<span class="kpi-dot dot-${key}"></span><span>${escHtml(word)}</span>`;
+  } catch (e) {
+    showToast('Failed to load overview: ' + e.message, 'error');
+  }
+  loadAttention();
+}
+
+async function loadAttention() {
+  const panel = document.getElementById('attention');
+  try {
+    const [supplyRes, taskRes] = await Promise.all([
+      apiCall('GET', `/disasters/${currentDisasterId}/supplies`),
+      apiCall('GET', `/disasters/${currentDisasterId}/tasks`),
+    ]);
+
+    const short = (supplyRes.data || [])
+      .map(s => ({ s, sev: supplySeverity(s) }))
+      .filter(x => x.sev.key !== 'ok')
+      .sort((a, b) => a.sev.pct - b.sev.pct);
+
+    setHtml('attention-supplies', short.length
+      ? short.map(({ s, sev }) => `<li class="attention-item">
+          <span class="kpi-dot dot-${sev.key}"></span>
+          <span class="attention-name">${escHtml(s.item_name)}</span>
+          <span class="attention-meta">${Math.round(sev.pct)}%</span>
+        </li>`).join('')
+      : `<li class="attention-empty"><span class="kpi-dot dot-ok"></span>Every tracked supply is above threshold</li>`);
+
+    const open = (taskRes.data || [])
+      .filter(t => t.status !== 'done')
+      .sort((a, b) => (a.priority === 'high' ? -1 : 1) - (b.priority === 'high' ? -1 : 1));
+
+    setHtml('attention-tasks', open.length
+      ? open.slice(0, 6).map(t => `<li class="attention-item">
+          <span class="kpi-dot dot-${t.priority === 'high' ? 'crit' : t.priority === 'medium' ? 'warn' : 'ok'}"></span>
+          <span class="attention-name">${escHtml(t.title)}</span>
+          <span class="attention-meta">${escHtml(t.priority || '')}</span>
+        </li>`).join('')
+      : `<li class="attention-empty"><span class="kpi-dot dot-ok"></span>No open tasks</li>`);
+
+    panel.hidden = false;
+  } catch (e) {
+    panel.hidden = true;
+  }
+}
 
 // ── COMMAND CENTER ─────────────────────────────────────────────────
 document.querySelectorAll('.quick-btn').forEach(btn => {
@@ -755,6 +833,9 @@ async function init() {
   document.getElementById('shift-date').value = todayStr();
   await loadDisasters();
   updateTimestamp();
+  // loadDisasters only picks the active disaster; the command view's overview
+  // needs an explicit first load or it sits on em dashes until a section change.
+  loadSection(currentSection);
 
   // Auto refresh every 30s
   autoRefreshTimer = setInterval(refreshCurrentSection, 30000);

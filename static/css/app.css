@@ -37,6 +37,7 @@
      the label size. Labels stay small, uppercase and letterspaced; the
      contrast between the two ends is what carries the hierarchy. */
   --fs-display: clamp(26px, 3vw, 36px);
+  --fs-h1: 28px;
   --fs-h2: 20px;
   --fs-h3: 16px;
   --fs-body: 14px;
@@ -286,6 +287,8 @@ body {
   flex: 1;
   overflow-y: auto;
   padding: clamp(16px, 2.2vw, 32px);
+  /* Clear the floating demo button so it never covers the last rows. */
+  padding-bottom: 96px;
   position: relative;
 }
 
@@ -748,8 +751,13 @@ tbody td {
   background: var(--bg2);
   border-radius: 3px;
   overflow: hidden;
-  margin: 10px 0 6px;
+  margin: var(--sp-1) 0;
 }
+/* A meter's empty track reads as a lighter step of the fill's own hue, so the
+   severity is legible across the whole bar and not only where it is filled. */
+.sev-crit .supply-bar-wrap { background: rgba(226, 75, 74, 0.16); }
+.sev-warn .supply-bar-wrap { background: rgba(212, 133, 10, 0.16); }
+.sev-ok   .supply-bar-wrap { background: rgba(29, 158, 117, 0.14); }
 
 .supply-bar { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
 .bar-crit { background: var(--accent); }
@@ -1193,6 +1201,183 @@ input[type=date] {
 }
 
 
+
+/* ═══════════════════════════════════════════════════════════════════════
+   OPERATION OVERVIEW  —  KPI row
+
+   These are headline counts, so the form is a stat tile: the number is the
+   visualisation and a one-bar chart would say less. One hero figure per view.
+
+   The values themselves stay in ink. Status colour lives in a separate dot +
+   word next to the hero, never in the digits — a red number reads as "this
+   number is wrong" rather than "this situation is bad", and colour alone is
+   not an accessible signal.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.overview {
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) 2.2fr;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-5);
+}
+
+.overview-hero,
+.kpi-tile {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-4);
+}
+
+.overview-hero {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--sp-1);
+}
+
+.overview-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+
+@media (min-width: 1100px) {
+  .overview-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+.kpi-tile {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.kpi-label {
+  font-family: var(--mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Proportional figures, not tabular: at display sizes tabular-nums gives every
+   digit the width of a zero and a number like 121 reads loose. */
+.kpi-hero-value {
+  font-size: clamp(44px, 5.5vw, 60px);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  color: var(--text);
+}
+
+.kpi-value {
+  font-size: var(--fs-h1, 28px);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.kpi-status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+.kpi-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.kpi-dot.dot-crit { background: var(--accent); }
+.kpi-dot.dot-warn { background: var(--warn); }
+.kpi-dot.dot-ok   { background: var(--safe); }
+
+/* ─── NEEDS ATTENTION ─────────────────────────────────────────────────── */
+
+.attention {
+  margin-top: var(--sp-5);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-4);
+}
+
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+  flex-wrap: wrap;
+}
+
+.panel-title {
+  font-size: var(--fs-h2);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.panel-hint {
+  font-family: var(--mono);
+  font-size: var(--fs-label);
+  color: var(--text-dim);
+}
+
+.attention-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--sp-5);
+}
+
+.attention-col { display: flex; flex-direction: column; gap: var(--sp-2); }
+
+.attention-list { list-style: none; display: flex; flex-direction: column; }
+
+.attention-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-body);
+}
+.attention-item:last-child { border-bottom: none; }
+
+.attention-item .kpi-dot { margin-top: 1px; }
+
+.attention-name {
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Columns of numbers DO align, so these get tabular figures. */
+.attention-meta {
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.attention-empty {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) 0;
+  font-size: var(--fs-body);
+  color: var(--text-muted);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════
    RESPONSIVE
 
@@ -1325,6 +1510,12 @@ input[type=date] {
   }
 
   .supply-grid { grid-template-columns: 1fr; }
+
+  .overview { grid-template-columns: 1fr; }
+  /* The floating demo button lands on this line while scrolling; the hint is
+     decorative, so it goes rather than sitting under the button. */
+  .panel-hint { display: none; }
+  .attention-grid { gap: var(--sp-4); }
 
   #demo-btn {
     right: 14px;

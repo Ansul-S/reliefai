@@ -88,6 +88,39 @@ os.makedirs(_STATIC_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=_STATIC_DIR, html=True), name="static")
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Cache headers
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@app.middleware("http")
+async def cache_control(request: Request, call_next):
+    """
+    Keep HTML revalidating and let versioned assets cache forever.
+
+    StaticFiles serves index.html with no cache directives, so a browser that
+    has seen the dashboard keeps its copy across deploys — a redeploy silently
+    does not reach returning visitors, which is exactly what happened after the
+    dashboard was rebuilt. The ``?v=`` on the stylesheet and script cannot help,
+    because the HTML naming them is the stale part.
+
+    ``no-cache`` does not mean "do not store": the browser keeps the file but
+    revalidates it, so an unchanged page still costs only a 304.
+    """
+    response = await call_next(request)
+    path = request.url.path
+
+    if path.endswith(".html") or path in ("/", "/dashboard"):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    elif path.startswith("/static/") and request.url.query:
+        # Fingerprinted by ?v= — a change to the file changes the URL.
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif path.startswith("/static/"):
+        response.headers["Cache-Control"] = "public, max-age=300"
+
+    return response
+
+
 @app.get("/", include_in_schema=False)
 async def root():
     """The landing page. The dashboard lives at /dashboard."""
@@ -106,9 +139,26 @@ async def dashboard():
 _API_KEY = os.getenv("API_KEY", "reliefai-demo-key")
 
 
-async def verify_api_key(x_api_key: str = Header(..., alias="X-API-Key")):
+async def verify_api_key(
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key")
+):
+    """
+    Guard writes and anything that spends model tokens.
+
+    The header is declared Optional so that a *missing* key is rejected by this
+    function rather than by request validation. Required-header syntax made
+    FastAPI answer an absent key with 422 Unprocessable Entity, which tells a
+    caller their request was malformed when the real problem is that they are
+    not authorised.
+
+    Read endpoints do not depend on this: the dashboard is meant to be
+    browsable by anyone. See the security note in the README for why the demo
+    key is deliberately public and what that does and does not protect.
+    """
+    if x_api_key is None:
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header.")
     if x_api_key != _API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+        raise HTTPException(status_code=401, detail="Invalid API key.")
     return x_api_key
 
 
@@ -294,7 +344,6 @@ async def create_disaster(
 @app.get("/disasters", tags=["Disasters"])
 async def list_disasters(
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(verify_api_key),
 ):
     disasters = await crud.list_disasters(db)
     return _ok([_disaster_dict(d) for d in disasters])
@@ -304,7 +353,6 @@ async def list_disasters(
 async def get_disaster(
     disaster_id: int,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(verify_api_key),
 ):
     disaster = await crud.get_disaster(db, disaster_id)
     if not disaster:
@@ -381,7 +429,6 @@ async def create_volunteer(
 async def list_disaster_volunteers(
     disaster_id: int,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(verify_api_key),
 ):
     disaster = await crud.get_disaster(db, disaster_id)
     if not disaster:
@@ -442,7 +489,6 @@ async def assign_volunteer(
 async def list_supplies(
     disaster_id: int,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(verify_api_key),
 ):
     disaster = await crud.get_disaster(db, disaster_id)
     if not disaster:
@@ -534,7 +580,6 @@ async def list_shifts(
     disaster_id: int,
     date: Optional[str] = Query(None, description="Filter by date YYYY-MM-DD"),
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(verify_api_key),
 ):
     disaster = await crud.get_disaster(db, disaster_id)
     if not disaster:
@@ -606,7 +651,6 @@ async def detect_and_fill_gaps(
 async def list_broadcasts(
     disaster_id: int,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(verify_api_key),
 ):
     disaster = await crud.get_disaster(db, disaster_id)
     if not disaster:
@@ -669,7 +713,6 @@ async def list_tasks(
     disaster_id: int,
     status: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(verify_api_key),
 ):
     disaster = await crud.get_disaster(db, disaster_id)
     if not disaster:
@@ -724,7 +767,6 @@ async def update_task(
 async def list_agent_logs(
     disaster_id: int,
     db: AsyncSession = Depends(get_db),
-    _: str = Depends(verify_api_key),
 ):
     disaster = await crud.get_disaster(db, disaster_id)
     if not disaster:

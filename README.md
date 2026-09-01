@@ -176,7 +176,7 @@ curl -X POST http://localhost:8000/disasters/1/command \
 ### 7. Run the checks
 
 ```bash
-pytest                  # 55 tests, no API key or network needed
+pytest                  # 70 tests, no API key or network needed
 python -m evals --list  # see the evaluation cases
 ```
 
@@ -210,6 +210,33 @@ python -m evals --list  # see the evaluation cases
 | `POST`  | `/demo/seed`                        | Seed Typhoon Carina scenario         |
 | `POST`  | `/demo/simulate`                    | Run all 5 demo commands              |
 | `GET`   | `/health`                           | Health check                         |
+
+### Authentication, and what it actually protects
+
+Endpoints split by what a call *costs*, not by HTTP verb:
+
+| | Requires `X-API-Key` |
+|---|---|
+| Reads that only touch the database (`GET` disasters, volunteers, supplies, shifts, broadcasts, tasks, logs) | no |
+| Anything that writes (`POST`, `PATCH`) | yes |
+| Anything that spends model tokens — `/command`, `/supplies/assess`, `/shifts/gaps`, and `GET /report` | yes |
+
+That last row is why the split is not simply "GET is public": `GET
+/disasters/{id}/report` runs the report agent, so it costs Groq tokens like any
+write does.
+
+**The demo key is public on purpose, and it is not a security boundary.**
+`API_KEY` defaults to `reliefai-demo-key`, the deployed instance uses that
+value, and the dashboard ships it in the page so anyone visiting the live demo
+can press *Deploy Agents* and watch the agent work. Anyone reading the page
+source can therefore write to the demo database too. That is an accepted
+trade for a public demo whose data is disposable and reseedable with
+`POST /demo/seed`.
+
+If you run this with data you care about, set `API_KEY` to a real secret in the
+environment and remove the default value from the dashboard's key field. The
+read endpoints stay public and harmless; the write and token-spending ones then
+actually close.
 
 ---
 

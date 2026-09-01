@@ -176,7 +176,7 @@ curl -X POST http://localhost:8000/disasters/1/command \
 ### 7. Run the checks
 
 ```bash
-pytest                  # 70 tests, no API key or network needed
+pytest                  # 95 tests, no API key or network needed
 python -m evals --list  # see the evaluation cases
 ```
 
@@ -232,6 +232,45 @@ can press *Deploy Agents* and watch the agent work. Anyone reading the page
 source can therefore write to the demo database too. That is an accepted
 trade for a public demo whose data is disposable and reseedable with
 `POST /demo/seed`.
+
+### Rate limiting
+
+Two layers, because they stop different things.
+
+**Per-IP throttling** — 120 reads/min, 60 writes/hour, 10 model calls/hour.
+Stops one client hammering the API. On its own it is not enough: a bot with a
+hundred addresses walks straight past it.
+
+**A daily token budget** — the layer that matters. The scarce resource is not
+CPU, it is Groq's free tier at 200,000 tokens a day; once those are gone every
+agent call fails and the demo is dead for everyone. The cap is denominated in
+tokens rather than requests because measured orchestrator runs range from
+**8,140 to 18,774 tokens**, so any call-count cap is either far too loose for
+the expensive runs or needlessly strict for the cheap ones. Spend is reported
+from the Groq client itself, so every call is counted — orchestrator loop,
+specialist agents and eval judge alike.
+
+Default is 150,000 tokens/day, leaving headroom to run the eval suite (66k-98k)
+after a busy day. Current spend is visible on `/health`. When the budget trips,
+reads keep working: the dashboard stays browsable even with the agent closed.
+
+| Variable | Default | |
+|---|---|---|
+| `RATELIMIT_GLOBAL_LLM_TOKENS_PER_DAY` | `150000` | the real cap |
+| `RATELIMIT_GLOBAL_LLM_PER_DAY` | `40` | guards the window before spend is known |
+| `RATELIMIT_LLM_PER_HOUR` | `10` | per IP |
+| `RATELIMIT_WRITE_PER_HOUR` | `60` | per IP |
+| `RATELIMIT_READ_PER_MIN` | `120` | per IP |
+| `RELIEFAI_RATELIMIT` | `on` | `off` disables entirely |
+
+Counters live in memory. That fits the deployment — Render's free tier runs one
+instance that sleeps when idle, so there is nowhere to put a shared counter —
+but it means they reset on restart, and a second replica would need Redis.
+
+Client identity comes from the **last** `X-Forwarded-For` entry, not the first.
+The proxy appends the address it observed; reading the first entry would let a
+caller pick their own identity by sending the header themselves, and with it an
+unlimited supply of fresh buckets.
 
 If you run this with data you care about, set `API_KEY` to a real secret in the
 environment and remove the default value from the dashboard's key field. The

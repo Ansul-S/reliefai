@@ -14,6 +14,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+
+import ratelimit
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -86,6 +88,58 @@ app.add_middleware(
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 os.makedirs(_STATIC_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=_STATIC_DIR, html=True), name="static")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Rate limiting
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    """
+    Throttle by client address, and cap model-invoking calls globally.
+
+    Read ``ratelimit`` for why there are two layers: per-IP limits stop one
+    caller hammering the API, and the global daily cap is what survives a
+    distributed one. The Groq free tier allows 200,000 tokens a day, and when
+    they are gone every agent call fails for everyone.
+    """
+    if not ratelimit.enabled():
+        return await call_next(request)
+
+    tier = ratelimit.classify(request.method, request.url.path)
+    if tier is None:
+        return await call_next(request)
+
+    ip = ratelimit.client_ip(
+        request.headers,
+        request.client.host if request.client else "unknown",
+    )
+    allowed, retry_after = ratelimit.check(ip, tier)
+
+    if not allowed:
+        limit, window = ratelimit.LIMITS[tier]
+        return JSONResponse(
+            status_code=429,
+            content={
+                "success": False,
+                "data": None,
+                "error": (
+                    "Rate limit exceeded. This is a public demo with a shared, "
+                    "finite model budget."
+                ),
+                "tier": tier,
+                "retry_after_seconds": retry_after,
+            },
+            headers={
+                "Retry-After": str(retry_after),
+                "X-RateLimit-Limit": str(limit),
+                "X-RateLimit-Window": str(window),
+            },
+        )
+
+    return await call_next(request)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -317,6 +371,9 @@ async def health():
         "ai_provider": "groq",
         "model": os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"),
         "version": "1.0.0",
+        # Exposed so the spend cap is observable without shell access — the
+        # point of a circuit breaker is knowing when it has tripped.
+        "rate_limit": ratelimit.snapshot(),
     }
 
 

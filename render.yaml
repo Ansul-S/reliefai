@@ -15,3 +15,12 @@ services:
         value: reliefai-demo-key
       - key: GROQ_MODEL
         value: openai/gpt-oss-120b
+      # Rate limiting. The token cap is the one that matters: it is denominated
+      # in the unit Groq meters, and 150k of the free tier's 200k/day leaves
+      # room to run the eval suite after a busy day on the demo.
+      - key: RATELIMIT_GLOBAL_LLM_TOKENS_PER_DAY
+        value: "150000"
+      - key: RATELIMIT_GLOBAL_LLM_PER_DAY
+        value: "40"
+      - key: RATELIMIT_LLM_PER_HOUR
+        value: "10"

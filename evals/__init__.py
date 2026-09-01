@@ -39,6 +39,10 @@ os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_EVAL_DB}"
 # fixed offline fixture. Set RELIEFAI_WEATHER_MODE explicitly to override.
 os.environ.setdefault("RELIEFAI_WEATHER_MODE", "offline")
 
+# A full suite makes far more model calls than the public demo cap allows, and
+# it runs against a local throwaway database rather than the deployed instance.
+os.environ.setdefault("RELIEFAI_RATELIMIT", "off")
+
 EVAL_DB_PATH = _EVAL_DB
 
 __all__ = ["EVAL_DB_PATH"]

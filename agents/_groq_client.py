@@ -51,6 +51,25 @@ _MAX_RETRIES = 4
 _BASE_DELAY  = 5.0
 
 
+def _report_tokens(count: int) -> None:
+    """
+    Tell the rate limiter what a call actually cost.
+
+    Reporting here rather than in HTTP middleware means every call is counted —
+    the orchestrator loop, the specialist agents and the eval judge alike — and
+    the daily spend cap reflects real consumption rather than a guess derived
+    from request counts.
+
+    Deliberately best-effort: a metering failure must never break a model call.
+    """
+    try:
+        import ratelimit
+
+        ratelimit.record_tokens(count)
+    except Exception:
+        pass
+
+
 async def _call_groq(system_prompt: str, user_message: str) -> dict:
     """
     Call Groq chat completions with JSON-mode enabled.
@@ -77,6 +96,8 @@ async def _call_groq(system_prompt: str, user_message: str) -> dict:
                 max_tokens=4096,
                 response_format={"type": "json_object"},
             )
+            usage = response.usage
+            _report_tokens(getattr(usage, "total_tokens", 0) or 0)
             raw = response.choices[0].message.content
             return json.loads(raw)
 
@@ -174,6 +195,8 @@ async def _call_groq_with_tools(
                 )
 
             usage = response.usage
+            total_tokens = getattr(usage, "total_tokens", 0) or 0
+            _report_tokens(total_tokens)
             return {
                 "message": {
                     "role": "assistant",
@@ -184,7 +207,7 @@ async def _call_groq_with_tools(
                 "usage": {
                     "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
                     "output_tokens": getattr(usage, "completion_tokens", 0) or 0,
-                    "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+                    "total_tokens": total_tokens,
                 },
                 "latency_ms": latency_ms,
             }

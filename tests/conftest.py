@@ -18,6 +18,9 @@ if _TMP_DB.exists():
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMP_DB}"
 os.environ.setdefault("GROQ_API_KEY", "test-key-not-used")
 os.environ.setdefault("API_KEY", "reliefai-demo-key")
+# The limiter would otherwise start rejecting requests partway through a run
+# and fail tests for a reason that has nothing to do with what they assert.
+os.environ.setdefault("RELIEFAI_RATELIMIT", "off")
 
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402

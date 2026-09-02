@@ -11,6 +11,7 @@ from typing import Any, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import database.crud as crud
+from database.models import SEVERITY_SCALE_MAX
 from agents._groq_client import _call_groq
 
 _AGENT_NAME = "report_agent"
@@ -140,7 +141,8 @@ async def run_report_agent(
         context = (
             f"DISASTER OVERVIEW\n"
             f"  id={disaster.id} name={disaster.name!r} type={disaster.type} "
-            f"location={disaster.location!r} severity={disaster.severity}/5 "
+            f"location={disaster.location!r} "
+            f"severity={disaster.severity}/{SEVERITY_SCALE_MAX} "
             f"status={disaster.status}\n"
             f"  created={disaster.created_at.isoformat() if disaster.created_at else '?'}\n\n"
             f"VOLUNTEER SUMMARY\n"

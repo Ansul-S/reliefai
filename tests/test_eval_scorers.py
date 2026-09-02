@@ -120,6 +120,109 @@ def test_grounding_still_reads_genuine_negatives_as_negative():
     assert -30.0 in result["unverified"]
 
 
+# ---------------------------------------------------------------------------
+# Grounding: system constants the agent quotes back
+#
+# An agent describing a query's own parameters — the window it scanned, the
+# threshold that classified an item, the scale a severity is reported on — is
+# stating something true. Those numbers used to live only in docstrings, so the
+# scorer could not trace them and reported four correct answers as
+# hallucinations. The tools now return them, so they are grounded the ordinary
+# way. Each case below is paired with the wrong value, to show the scorer got
+# no more permissive: it can now see these numbers, not excuse them.
+# ---------------------------------------------------------------------------
+
+GAP_RESULTS = {
+    "detect_shift_gaps": {
+        "window_days": 7,
+        "block_hours": 4,
+        "min_volunteers": 2,
+        "gap_count": 42,
+        "gaps": [
+            {"date": "2026-09-03", "hour_block": 8, "volunteers_count": 0},
+        ],
+    }
+}
+
+HEALTHY_SUPPLY_RESULTS = {
+    "get_supply_status": [
+        {
+            "item_name": "Blankets",
+            "quantity_needed": 100.0,
+            "quantity_available": 95.0,
+            "is_critical": False,
+            "critical_threshold_pct": 30,
+        }
+    ]
+}
+
+STATUS_RESULTS = {
+    "get_disaster_status": {
+        "id": 1,
+        "name": "Storm Watch",
+        "severity": 2,
+        "severity_scale_max": 5,
+        "status": "active",
+    }
+}
+
+
+def test_grounding_accepts_the_scan_window_the_tool_reports():
+    """
+    Regression: "no coverage for the next 7 days" failed
+    situation_assessment_multi_tool. The 7 is detect_shift_gaps's own window,
+    which the payload now carries.
+    """
+    result = score_grounding(
+        "No shift coverage for the next 7 days: 42 blocks are understaffed.",
+        GAP_RESULTS,
+    )
+    assert result["passed"], result["detail"]
+
+
+def test_grounding_still_rejects_a_window_the_tool_did_not_report():
+    result = score_grounding(
+        "No shift coverage for the next 14 days.", GAP_RESULTS
+    )
+    assert not result["passed"], result["detail"]
+    assert 14.0 in result["unverified"]
+
+
+def test_grounding_accepts_the_critical_threshold_the_tool_applied():
+    """Regression: "threshold <30 % availability" failed no_false_shortage_alarm."""
+    result = score_grounding(
+        "Blankets are at 95 % of the required 100 units. None are flagged "
+        "critical (threshold <30 % availability).",
+        HEALTHY_SUPPLY_RESULTS,
+    )
+    assert result["passed"], result["detail"]
+
+
+def test_grounding_still_rejects_a_threshold_the_tool_did_not_apply():
+    result = score_grounding(
+        "None are flagged critical (threshold <45 % availability).",
+        HEALTHY_SUPPLY_RESULTS,
+    )
+    assert not result["passed"], result["detail"]
+    assert 45.0 in result["unverified"]
+
+
+def test_grounding_accepts_the_severity_scale_the_tool_reports():
+    """Regression: "severity 2/5" failed simple_lookup_is_efficient."""
+    result = score_grounding(
+        "The disaster remains active with severity 2/5.", STATUS_RESULTS
+    )
+    assert result["passed"], result["detail"]
+
+
+def test_grounding_still_rejects_a_severity_scale_the_tool_did_not_report():
+    result = score_grounding(
+        "The disaster remains active with severity 2/10.", STATUS_RESULTS
+    )
+    assert not result["passed"], result["detail"]
+    assert 10.0 in result["unverified"]
+
+
 def test_grounding_passes_when_no_numeric_claims():
     result = score_grounding("Supplies look adequate.", SUPPLY_RESULTS)
     assert result["passed"]

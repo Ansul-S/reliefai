@@ -11,14 +11,17 @@ from typing import Any, Dict, List
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import database.crud as crud
+from database.models import SEVERITY_SCALE_MAX
 from agents._groq_client import _call_groq
 
 _AGENT_NAME = "supply_agent"
 
+_CRITICAL_PCT = round(crud.CRITICAL_SUPPLY_THRESHOLD * 100)
+
 _SYSTEM_PROMPT = (
     "You are Supply Chain Agent for disaster relief. "
     "Monitor supply levels against needs. "
-    "CRITICAL threshold: available < 30% of needed. "
+    f"CRITICAL threshold: available < {_CRITICAL_PCT}% of needed. "
     "When critical items found, always create procurement tasks. "
     "Suggest reallocation when one category has surplus and another is critical. "
     "Prioritize: water > food > medical > shelter > equipment. "
@@ -106,7 +109,8 @@ async def run_supply_agent(
         # ── 2. Build context ───────────────────────────────────────────────
         context = (
             f"DISASTER: id={disaster.id} name={disaster.name!r} "
-            f"location={disaster.location!r} severity={disaster.severity}/5\n\n"
+            f"location={disaster.location!r} "
+            f"severity={disaster.severity}/{SEVERITY_SCALE_MAX}\n\n"
             f"SUPPLY OVERVIEW BY CATEGORY:\n{category_summary}\n\n"
             f"ALL SUPPLY ITEMS ({len(all_supplies)}, "
             f"{len(critical_ids)} critical):\n{supply_lines}\n\n"

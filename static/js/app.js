@@ -329,6 +329,15 @@ function renderOrchestratorResult(result) {
     ).join('');
   }
 
+  // Run notices — how the run went, not what the data says. Rendered apart
+  // from alerts so an operator does not read a harness remark as a finding.
+  const notices = result.run_notices || [];
+  if (notices.length) {
+    html += notices.map(n =>
+      `<div class="run-notice"><span class="run-notice-icon">ⓘ</span>${escHtml(n)}</div>`
+    ).join('');
+  }
+
   // Per-agent results
   const results = result.results || {};
   Object.entries(results).forEach(([agentName, agentResult]) => {

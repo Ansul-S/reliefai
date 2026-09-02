@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from database.models import SEVERITY_SCALE_MAX, SEVERITY_SCALE_MIN
+
 
 # ═══════════════════════════════════════════════════════════════════
 # Shared config
@@ -25,7 +27,7 @@ class DisasterCreate(_Base):
     name: str = Field(..., min_length=2, max_length=255)
     type: str = Field(..., min_length=2, max_length=100)
     location: str = Field(..., min_length=2, max_length=255)
-    severity: int = Field(..., ge=1, le=5)
+    severity: int = Field(..., ge=SEVERITY_SCALE_MIN, le=SEVERITY_SCALE_MAX)
 
 
 class VolunteerCreate(_Base):
@@ -158,6 +160,9 @@ class OrchestratorResponse(_Base):
     agents_called: List[str] = Field(default_factory=list)
     results: Dict[str, Any] = Field(default_factory=dict)
     alerts: List[str] = Field(default_factory=list)
+    # Remarks about the run itself (e.g. the tool-round limit was reached),
+    # deliberately separate from `alerts`, which are claims about the operation.
+    run_notices: List[str] = Field(default_factory=list)
     next_recommended_actions: List[str] = Field(default_factory=list)
     execution_time_ms: int = 0
 

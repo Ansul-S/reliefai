@@ -12,6 +12,7 @@ from typing import Any, Dict, List
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import database.crud as crud
+from database.models import SEVERITY_SCALE_MAX
 from agents._groq_client import _call_groq
 
 _AGENT_NAME = "shift_agent"
@@ -88,7 +89,8 @@ async def run_shift_agent(disaster_id: int, db: AsyncSession) -> Dict[str, Any]:
         # ── 2. Build context ───────────────────────────────────────────────
         context = (
             f"DISASTER: id={disaster.id} name={disaster.name!r} "
-            f"location={disaster.location!r} severity={disaster.severity}/5\n\n"
+            f"location={disaster.location!r} "
+            f"severity={disaster.severity}/{SEVERITY_SCALE_MAX}\n\n"
             f"SHIFT GAPS DETECTED ({len(gaps)} total, showing first 30):\n"
             + (gap_lines or "  (no gaps — coverage looks good)")
             + f"\n\nELIGIBLE VOLUNTEERS ({len(eligible_vols)} with <12 hrs today):\n"

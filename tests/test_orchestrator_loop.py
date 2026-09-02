@@ -172,7 +172,10 @@ async def test_max_iteration_limit_is_enforced(
     result = await orchestrator.run_orchestrator(did, "Loop forever", db)
 
     assert result["iterations"] == 3
-    assert any("tool limit" in a for a in result["alerts"])
+    # The round limit is a remark about the run, so it belongs in run_notices
+    # and must not masquerade as an alert about the operation.
+    assert any("tool limit" in n for n in result["run_notices"])
+    assert not any("tool limit" in a for a in result["alerts"])
 
 
 async def test_unknown_tool_does_not_abort_the_run(db, seeded_disaster, fake_llm):
@@ -323,6 +326,7 @@ async def test_response_preserves_the_existing_api_contract(
         "agents_called",
         "results",
         "alerts",
+        "run_notices",
         "next_recommended_actions",
         "execution_time_ms",
     ):
@@ -331,6 +335,7 @@ async def test_response_preserves_the_existing_api_contract(
     assert isinstance(result["agents_called"], list)
     assert isinstance(result["results"], dict)
     assert isinstance(result["alerts"], list)
+    assert isinstance(result["run_notices"], list)
     assert isinstance(result["next_recommended_actions"], list)
     assert isinstance(result["execution_time_ms"], int)
 

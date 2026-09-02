@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import database.crud as crud
+from database.models import SEVERITY_SCALE_MAX
 from agents._groq_client import _call_groq
 
 _AGENT_NAME = "comms_agent"
@@ -71,7 +72,7 @@ async def run_comms_agent(
         # ── 2. Build user message ──────────────────────────────────────────
         user_message = (
             f"DISASTER: name={disaster.name!r} location={disaster.location!r} "
-            f"severity={disaster.severity}/5\n\n"
+            f"severity={disaster.severity}/{SEVERITY_SCALE_MAX}\n\n"
             f"ORIGINAL MESSAGE:\n{message}\n\n"
             f"TARGET LANGUAGES: {', '.join(target_langs)}\n"
             f"DELIVERY CHANNEL: {safe_channel}\n"

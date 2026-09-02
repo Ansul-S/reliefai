@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from fastmcp import FastMCP
 
 from database import AsyncSessionLocal
+from database.models import SEVERITY_SCALE_MAX
 import database.crud as crud
 from mcp_server.weather import get_forecast
 
@@ -93,6 +94,7 @@ def _supply_to_dict(supply: Any, critical: bool = False) -> Dict[str, Any]:
         "status": supply.status,
         "updated_at": supply.updated_at.isoformat() if supply.updated_at else None,
         "is_critical": critical,
+        "critical_threshold_pct": round(crud.CRITICAL_SUPPLY_THRESHOLD * 100),
     }
 
 
@@ -216,17 +218,31 @@ async def cancel_shift(shift_id: int, reason: str = "") -> Dict[str, Any]:
 
 
 @mcp.tool()
-async def detect_shift_gaps(disaster_id: int) -> List[Dict[str, Any]]:
+async def detect_shift_gaps(disaster_id: int) -> Dict[str, Any]:
     """
-    Detect 4-hour blocks in the next 7 days where fewer than 2 volunteers
-    are scheduled. Returns a list of gap descriptors.
+    Detect blocks in the coming days where too few volunteers are scheduled.
+
+    Returns the scan parameters alongside the gaps themselves::
+
+        {"window_days": 7, "block_hours": 4, "min_volunteers": 2,
+         "gap_count": 12, "gaps": [{date, hour_block, volunteers_count}, ...]}
+
+    Quote `window_days` when describing the period examined — say "the next 7
+    days" only because the payload says 7, never from memory. The window is
+    configuration and can change.
     """
     try:
         async with AsyncSessionLocal() as db:
             gaps = await crud.detect_shift_gaps(db, disaster_id)
-            return gaps
+            return {
+                "window_days": crud.SHIFT_GAP_WINDOW_DAYS,
+                "block_hours": crud.SHIFT_GAP_BLOCK_HOURS,
+                "min_volunteers": crud.SHIFT_GAP_MIN_VOLUNTEERS,
+                "gap_count": len(gaps),
+                "gaps": gaps,
+            }
     except Exception as exc:
-        return [{"error": str(exc)}]
+        return {"error": str(exc)}
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +369,9 @@ async def search_notes(disaster_id: int, query: str) -> List[Dict[str, Any]]:
 async def get_supply_status(disaster_id: int) -> List[Dict[str, Any]]:
     """
     Return all supplies for a disaster with an `is_critical` flag set to True
-    for items where available quantity is below 30 % of needed.
+    for items below the critical threshold. Each record carries the threshold
+    that classified it as `critical_threshold_pct`; cite that figure rather
+    than a remembered one when explaining why an item is critical.
     """
     try:
         async with AsyncSessionLocal() as db:
@@ -487,6 +505,8 @@ async def get_broadcasts(disaster_id: int) -> List[Dict[str, Any]]:
 async def get_disaster_status(disaster_id: int) -> Dict[str, Any]:
     """Get an overview of a disaster: name, type, location, severity, status, and
     counts of supplies, critical supplies, shifts, pending tasks and overdue tasks.
+    `severity` is reported on a scale whose upper bound is `severity_scale_max`,
+    so write "severity 4/5" only from those two fields.
     Call this first when you need general situational awareness."""
     try:
         async with AsyncSessionLocal() as db:
@@ -506,6 +526,7 @@ async def get_disaster_status(disaster_id: int) -> Dict[str, Any]:
                 "type": disaster.type,
                 "location": disaster.location,
                 "severity": disaster.severity,
+                "severity_scale_max": SEVERITY_SCALE_MAX,
                 "status": disaster.status,
                 "counts": {
                     "supplies_total": len(supplies),

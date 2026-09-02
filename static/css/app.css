@@ -522,6 +522,23 @@ textarea::placeholder, input::placeholder { color: var(--text-dim); }
 
 .alert-icon { flex-shrink: 0; margin-top: 1px; }
 
+/* A remark about the run itself, not a finding about the operation. Muted on
+   purpose: it must be readable without competing with a real alert. */
+.run-notice {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.run-notice-icon { flex-shrink: 0; margin-top: 1px; }
+
 .agent-result-card {
   background: var(--card);
   border: 1px solid var(--border);

@@ -19,6 +19,24 @@ from database.models import (
 )
 
 # ---------------------------------------------------------------------------
+# Domain constants
+#
+# The rules these encode are things the agent describes back to an operator
+# ("no coverage for the next 7 days", "below the 30 % critical threshold").
+# Named here and returned in tool payloads so the number the agent states and
+# the number the query used cannot drift apart.
+# ---------------------------------------------------------------------------
+
+# Coverage scan: how far ahead, in what block size, and the staffing floor.
+SHIFT_GAP_WINDOW_DAYS = 7
+SHIFT_GAP_BLOCK_HOURS = 4
+SHIFT_GAP_MIN_VOLUNTEERS = 2
+
+# A supply is critical below this fraction of the quantity needed.
+CRITICAL_SUPPLY_THRESHOLD = 0.3
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -275,16 +293,16 @@ async def detect_shift_gaps(
     db: AsyncSession, disaster_id: int
 ) -> List[Dict[str, Any]]:
     """
-    For the next 7 days, examine every 4-hour block (0,4,8,12,16,20) and
-    return blocks where fewer than 2 non-cancelled shifts overlap.
-    Returns list of {date, hour_block, volunteers_count}.
+    Over SHIFT_GAP_WINDOW_DAYS, examine every SHIFT_GAP_BLOCK_HOURS-hour block
+    and return blocks covered by fewer than SHIFT_GAP_MIN_VOLUNTEERS
+    non-cancelled shifts. Returns list of {date, hour_block, volunteers_count}.
     """
     now = _utcnow()
     gaps: List[Dict[str, Any]] = []
 
-    for day_offset in range(7):
+    for day_offset in range(SHIFT_GAP_WINDOW_DAYS):
         check_date = (now + timedelta(days=day_offset)).date()
-        for hour_block in range(0, 24, 4):
+        for hour_block in range(0, 24, SHIFT_GAP_BLOCK_HOURS):
             block_start = datetime(
                 check_date.year,
                 check_date.month,
@@ -292,7 +310,7 @@ async def detect_shift_gaps(
                 hour_block,
                 tzinfo=timezone.utc,
             )
-            block_end = block_start + timedelta(hours=4)
+            block_end = block_start + timedelta(hours=SHIFT_GAP_BLOCK_HOURS)
 
             result = await db.execute(
                 select(func.count(Shift.id)).where(
@@ -305,7 +323,7 @@ async def detect_shift_gaps(
                 )
             )
             count = result.scalar_one()
-            if count < 2:
+            if count < SHIFT_GAP_MIN_VOLUNTEERS:
                 gaps.append(
                     {
                         "date": check_date.isoformat(),
@@ -413,7 +431,7 @@ async def update_supply(
 
 
 async def get_critical_supplies(
-    db: AsyncSession, disaster_id: int, threshold: float = 0.3
+    db: AsyncSession, disaster_id: int, threshold: float = CRITICAL_SUPPLY_THRESHOLD
 ) -> List[Supply]:
     """Return supplies where quantity_available / quantity_needed < threshold."""
     all_supplies = await list_supplies_by_disaster(db, disaster_id)

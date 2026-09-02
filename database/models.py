@@ -17,6 +17,19 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
+# ---------------------------------------------------------------------------
+# Domain constants
+#
+# Values the agent legitimately quotes back to an operator ("severity 4/5").
+# They are defined once here and surfaced in tool payloads rather than living
+# only in prose, so that a number the agent states can always be traced to
+# something a tool actually returned.
+# ---------------------------------------------------------------------------
+
+SEVERITY_SCALE_MIN = 1
+SEVERITY_SCALE_MAX = 5
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -28,7 +41,9 @@ class Disaster(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     type: Mapped[str] = mapped_column(String(100), nullable=False)
     location: Mapped[str] = mapped_column(String(255), nullable=False)
-    severity: Mapped[int] = mapped_column(Integer, nullable=False)  # 1-5
+    severity: Mapped[int] = mapped_column(  # SEVERITY_SCALE_MIN..SEVERITY_SCALE_MAX
+        Integer, nullable=False
+    )
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import database.crud as crud
+from database.models import SEVERITY_SCALE_MAX
 from agents._groq_client import (
     _call_groq_with_tools,
     estimate_cost_usd,
@@ -94,7 +95,8 @@ def _tool_call_signature(name: str, raw_args: Any) -> str:
 def _build_user_message(disaster: Any, command: str) -> str:
     return (
         f"Disaster id={disaster.id} — {disaster.name!r} "
-        f"({disaster.type}, {disaster.location}, severity {disaster.severity}/5, "
+        f"({disaster.type}, {disaster.location}, "
+        f"severity {disaster.severity}/{SEVERITY_SCALE_MAX}, "
         f"status {disaster.status}).\n\n"
         f"COMMAND: {command}"
     )
@@ -215,8 +217,9 @@ async def run_orchestrator(
 
     Returns the same response shape the API and dashboard have always consumed
     (``orchestrator_summary``, ``agents_called``, ``results``, ``alerts``,
-    ``next_recommended_actions``, ``execution_time_ms``), plus a ``trace`` with
-    per-tool timings and token accounting.
+    ``next_recommended_actions``, ``execution_time_ms``), plus ``run_notices``
+    for remarks about the run itself and a ``trace`` with per-tool timings and
+    token accounting.
     """
     start_ts = time.time()
     usage_totals = {
@@ -375,11 +378,19 @@ async def run_orchestrator(
     )
 
     alerts = parsed.get("alerts") or []
+
+    # Notices about how the run itself went, kept out of `alerts`. Alerts are
+    # the agent's claims about the operation; a notice is the harness talking
+    # about its own execution. Mixing them made the orchestrator's own round
+    # limit read as an unsupported factual claim by the agent — both to a
+    # reader and to the grounding scorer, which checks every number in
+    # `alerts` against tool output and cannot trace a number we wrote.
+    run_notices: List[str] = []
     if hit_iteration_limit:
-        alerts = list(alerts) + [
+        run_notices.append(
             f"Orchestrator stopped at the {MAX_TOOL_ITERATIONS}-round tool limit; "
             "the answer may be incomplete."
-        ]
+        )
 
     failed_tools = sum(1 for t in trace if t["step"] == "tool" and not t["ok"])
 
@@ -413,6 +424,7 @@ async def run_orchestrator(
         "tools_called": tools_called,
         "results": results,
         "alerts": alerts,
+        "run_notices": run_notices,
         "next_recommended_actions": parsed.get("next_recommended_actions", []),
         "execution_time_ms": duration_ms,
         "trace": trace,

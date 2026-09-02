@@ -5,6 +5,8 @@ import json
 
 import pytest
 
+import database.crud as crud
+from database.models import SEVERITY_SCALE_MAX
 from agents.tool_registry import (
     MAX_TOOL_RESULT_CHARS,
     execute_tool,
@@ -108,6 +110,51 @@ async def test_valid_tool_execution(seeded_disaster):
     assert any(s["item_name"] == "Drinking Water" for s in supplies)
     # 100 of 1000 is under the 30% critical threshold.
     assert any(s["is_critical"] for s in supplies)
+
+
+async def test_supply_payload_carries_the_threshold_that_classified_it(
+    seeded_disaster,
+):
+    """
+    The agent explains criticality to operators ("below the 30 % threshold").
+    That figure has to come from the payload, not from the docstring, or it
+    goes stale silently and cannot be traced by the grounding scorer.
+    """
+    record = await execute_tool(
+        "get_supply_status",
+        json.dumps({"disaster_id": seeded_disaster["disaster_id"]}),
+    )
+    supplies = json.loads(record["result"])
+    assert supplies
+    assert all(s["critical_threshold_pct"] == 30 for s in supplies)
+
+
+async def test_gap_payload_carries_its_scan_parameters(seeded_disaster):
+    """detect_shift_gaps reports the window it scanned, not just what it found."""
+    record = await execute_tool(
+        "detect_shift_gaps",
+        json.dumps({"disaster_id": seeded_disaster["disaster_id"]}),
+    )
+    assert record["ok"] is True
+
+    payload = json.loads(record["result"])
+    assert payload["window_days"] == crud.SHIFT_GAP_WINDOW_DAYS
+    assert payload["block_hours"] == crud.SHIFT_GAP_BLOCK_HOURS
+    assert payload["min_volunteers"] == crud.SHIFT_GAP_MIN_VOLUNTEERS
+    assert payload["gap_count"] == len(payload["gaps"])
+    # The window survives an empty result, which is exactly the case where an
+    # agent says "no gaps over the next 7 days" and has nothing to cite.
+    assert isinstance(payload["gaps"], list)
+
+
+async def test_disaster_status_carries_the_severity_scale(seeded_disaster):
+    record = await execute_tool(
+        "get_disaster_status",
+        json.dumps({"disaster_id": seeded_disaster["disaster_id"]}),
+    )
+    status = json.loads(record["result"])
+    assert status["severity_scale_max"] == SEVERITY_SCALE_MAX
+    assert 1 <= status["severity"] <= status["severity_scale_max"]
 
 
 async def test_unknown_tool_fails_safely():

@@ -1,5 +1,105 @@
 # Changelog
 
+## 2026-09-02
+
+One commit, `8821499`. 16 files, +290 / −29. Tests 98 → 110.
+
+The eval suite ran for the first time since the ISO-date fix and since the tool
+count went 20 → 21. Both changes came back clean. The run also settled an open
+question about the grounding scorer, and the answer was not the one predicted.
+
+---
+
+### 1. What the eval runs measured
+
+`eval_report_v3.json` — 12/12 assessable, **9/12 (75%)**, mean 0.96, 96,260
+tokens. Against the true full-suite baseline of 7/12 (58%), and against the
+aborted 9-case run that scored 78%, the comparable first nine cases went 8/9
+(89%).
+
+- **The ISO-8601 fix is confirmed end to end.** `identifies_overdue_tasks`
+  passed with 6/6 claims traced; its old `[8.0, 30.0, 8.0, 30.0]` signature is
+  gone, and no date-shaped false positive appears anywhere in the 12 cases.
+- **The 20 → 21 tool growth cost nothing in selection.** `tool_selection`
+  scored 1.00 on all 12 cases. `get_weather_forecast` was even chosen unprompted
+  during a general situation assessment, which answers the open question of
+  whether its docstring was discoverable.
+
+### 2. Constants the agent quotes are now returned, not hidden — `8821499`
+
+`situation_assessment_multi_tool` was predicted to keep failing on a stray
+`7.0` from "no shift coverage for the next 7 days". It passed — but not because
+anything was fixed. It simply never called `detect_shift_gaps` that run, so
+there was no window to describe. The defect was intact, and it surfaced in three
+*other* cases wearing different clothes:
+
+```
+no_false_shortage_alarm        UNGROUNDED [30.0]  <- "threshold <30 % availability"
+simple_lookup_is_efficient     UNGROUNDED [5.0]   <- "severity 2/5"
+does_not_fabricate_missing_data UNGROUNDED [8.0]  <- "the 8-round tool limit"
+situation_assessment_multi_tool UNGROUNDED [7.0]  <- "the next 7 days"   (run 2)
+```
+
+Every one is a **true statement about the system itself** — a scan window, a
+criticality threshold, a severity scale — that the agent read from a docstring
+and that no tool ever put in its payload. Narrowing what counts as a claim would
+have caught one of the four; loosening the scorer would have solved the problem
+by making it blind, which is the one thing a grounding check cannot afford.
+
+The tools now return what they reasoned over:
+
+| tool | added |
+|---|---|
+| `detect_shift_gaps` | `window_days`, `block_hours`, `min_volunteers`, `gap_count` |
+| `get_supply_status` | `critical_threshold_pct` on each record |
+| `get_disaster_status` | `severity_scale_max` |
+
+The values are named once in `database/crud.py` and `database/models.py`, then
+read from there by the queries, the tool payloads, the Pydantic bounds and the
+agent prompts, so the figure an agent states and the figure a query used cannot
+drift apart.
+
+**`detect_shift_gaps`'s tool payload is now an object, not a bare list** — a
+deliberate breaking change to that contract. Wrapping it is what lets the window
+survive an empty result, which is exactly the case where an agent says "no gaps
+over the next 7 days" and has nothing to cite. `crud`'s own return shape is
+unchanged, so `report_agent` and `shift_agent` were untouched.
+
+### 3. The orchestrator's own footer is no longer scored as an agent claim
+
+`agents/orchestrator.py` appended *"Orchestrator stopped at the 8-round tool
+limit"* into `alerts`. Alerts are the agent's claims about the operation; that
+footer is the harness describing its own execution. Mixing them cost twice: the
+grounding scorer flagged the `8`, and the LLM judge independently returned
+grounding=2 citing that sentence as the answer's *only* unsupported claim.
+
+It moves to a new `run_notices` field, rendered on the dashboard as a muted
+notice rather than an alert.
+
+### 4. Verification, and why it is not the eval run
+
+`eval_report_v4.json` confirmed both fixes against a live model before the daily
+budget ran out at case 8:
+
+- `no_false_shortage_alarm` **FAIL → PASS**, 8/8 traced, stating "below the 30 %
+  critical threshold" — the exact sentence that failed.
+- `schedules_shift_from_available_volunteers` stated "Remaining gaps across the
+  7-day window" and scored grounding **14/14, 1.00** — the exact `7.0` failure,
+  now grounded.
+
+But no LLM-driven run can be *relied* on to exercise this, because tool choice
+belongs to the model: `detect_shift_gaps` sits in `any_of_tools`, so a case can
+satisfy its constraint without ever calling it. That is precisely how the bug
+sidestepped one run and reappeared the next.
+
+So the binding verification is deterministic and costs nothing:
+`tests/test_grounded_constants_e2e.py` drives the real tool through the real
+orchestrator with a scripted model and scores it with the real scorer. Every
+accepted constant is paired with a test that rejects the wrong value, so this
+widened what the scorer can see without widening what it excuses.
+
+---
+
 ## 2026-09-01
 
 Seven commits, `c8e2661..9eaac26`. 19 files, +4,382 / −1,904. Tests 55 → 98.

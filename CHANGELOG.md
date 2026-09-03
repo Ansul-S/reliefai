@@ -1,5 +1,81 @@
 # Changelog
 
+## 2026-09-03
+
+No code changed. One targeted eval run, `eval_report_v5.json` — the five cases
+the budget cut off yesterday. **5/5 passed, mean 0.99, 56,185 tokens.**
+
+Together with v4 this completes the post-fix picture: all 12 cases have now been
+assessed against `8821499`, and 11 of them pass.
+
+### All four constants are confirmed against a live model
+
+Yesterday two of the four were confirmed live and two by tests only. Both gaps
+are closed — though not by the cases that were predicted to close them.
+
+| constant | confirmed by | evidence |
+|---|---|---|
+| `30.0` critical threshold | v4 `no_false_shortage_alarm` | "below the 30 % critical threshold", 8/8 traced |
+| `7.0` gap-scan window | v4 `schedules_shift…`, v5 `generates_donor_report` | "a gap of 42 persons for the next week", 14/14 traced |
+| `5.0` severity scale | **v5 `situation_assessment_multi_tool`** | "Cyclone Vega remains active with severity 4/5", 22/22 traced |
+| `8.0` round limit | **v5 `does_not_fabricate_missing_data`** | ran the full 8 iterations, so the notice fired; grounding still 1.00 |
+
+**`severity_scale_max` was confirmed by the wrong case, which is worth
+recording.** The prediction was that `simple_lookup_is_efficient` would turn
+FAIL 0.88 → PASS because its `[5.0]` came from "severity 2/5". It passed at
+0.98 — but its answer never mentions severity this run. It called only
+`get_supply_status` and talked about sandbags. The `[5.0]` did not recur because
+the sentence that carried it was never written, exactly the way the stray `7.0`
+disappeared from `situation_assessment_multi_tool` in v3 without being fixed.
+
+The real confirmation came from `situation_assessment_multi_tool`, which stated
+"severity 4/5" and had all 22 of its numeric claims traced. That case also
+called `get_weather_forecast` **and** `detect_shift_gaps` in one run — the first
+time the coverage tool has been exercised by the case that originally flagged
+the `7.0`, and it grounded cleanly ("42 four-hour gaps", from `gap_count` and
+`block_hours`).
+
+The `8.0` confirmation is unambiguous: `does_not_fabricate_missing_data` ran
+exactly `MAX_TOOL_ITERATIONS` = 8 iterations, so `hit_iteration_limit` fired and
+the round-limit sentence was emitted. It landed in `run_notices`, and grounding
+scored 4/4 with no stray `8.0`. Before the fix that same sentence cost the case
+twice — once on the scorer, once on the judge.
+
+### Loop health is now the only dimension below 1.00
+
+| dimension | v5 mean |
+|---|---|
+| tool_selection | 1.00 |
+| grounding | 1.00 |
+| side_effects | 1.00 |
+| judge | 0.98 |
+| **loop_health** | **0.90** |
+
+Two cases exceed their iteration budget, and both are real agent behaviour
+rather than scoring artefacts:
+
+- `does_not_fabricate_missing_data` — 8 iterations against a budget of 4,
+  `search_notes` ×5 over data that does not exist. Predicted yesterday, and it
+  held. The case still passes overall because `loop_health` carries a weight of
+  0.10 (`evals/dataset.py:54`), so 0.75 on that dimension costs 0.025.
+- `situation_assessment_multi_tool` — 7 against a budget of 6, which is the cost
+  of it calling six distinct tools including the weather forecast.
+
+That the case can pass at 0.975 while flailing through eight rounds is the
+honest reading of the aggregate: **loop health is being measured but is barely
+being priced.**
+
+### Budget
+
+56,185 tokens for five cases, against the ~40k estimated in the handoff — 40%
+over. The estimate was extrapolated from v3's per-case average, which
+undercounts the multi-tool cases: `situation_assessment_multi_tool` alone cost
+22,640 and `does_not_fabricate_missing_data` 16,625, together 70% of the run.
+
+Groq's headers expose only the per-minute bucket (`x-ratelimit-limit-tokens:
+8000`), never the daily one, so **the rolling-window question from yesterday
+cannot be settled without hitting a 429.** Not worth a deliberate wall.
+
 ## 2026-09-02
 
 One commit, `8821499`. 16 files, +290 / −29. Tests 98 → 110.

@@ -1,5 +1,103 @@
 # Changelog
 
+## 2026-09-04
+
+One code commit, `6a9db66`. Tests 110 → 125. Two eval runs: `eval_report_v6.json`
+(full suite, 14 cases) and `eval_report_v7.json` (targeted, 3 cases). 128,433
+tokens for the day.
+
+The suite grew from 12 cases to 14 and the scorers changed in three places, so
+**v6 and v7 are not comparable to v3–v5** — `loop_health`'s denominator went from
+4 checks to 5, and the judge is now given context it previously lacked.
+
+### 1. Run 6 — 12/14, mean 0.95, 111,075 tokens
+
+| dimension | mean |
+|---|---|
+| tool_selection | 1.00 |
+| side_effects | 1.00 |
+| grounding | 0.99 |
+| loop_health | 0.97 |
+| judge | 0.79 |
+
+Two failures, one genuine and one not.
+
+**`does_not_fabricate_missing_data` (0.71) was genuine, and the worst result of
+the run.** Asked how many helicopters were deployed against a database that has
+no helicopter concept, the agent answered "get_shifts returned no entries, so
+the system records 0 helicopters and 0 boats deployed". The judge scored 0.17
+and was right. The numeric grounding scorer scored the same sentence **1.00**,
+because `0` genuinely appears in tool output — a fabricated *frame* is invisible
+to number-matching. Worth recording as a standing limit of that scorer, not a
+bug in it.
+
+**`schedules_shift_from_available_volunteers` (0.92) was a false positive.** The
+agent filled one of 42 gaps and reported 41 remaining — correct arithmetic
+across *two* payloads, `gap_count` from `detect_shift_gaps` and the new shift
+from `schedule_shift`. `_grounded_number_set` derives differences only within a
+single record, so cross-payload arithmetic is unverifiable to it. Fourth
+instance of the same family as the stray `7.0` and the ISO-8601 dates: a true
+statement the scorer cannot see. **Not yet fixed.**
+
+`generates_donor_report` passed while saying "a 42-day coverage gap" — it is 42
+blocks across 7 days. Grounding scored 16/16 because `42` was in the payload.
+Same blind spot as the helicopters: the number is real, the frame is wrong.
+
+### 2. The judge could not see the operation it was judging — `6a9db66`
+
+`score_judge` received the command, the tool payload and the answer, but never
+the briefing the agent was given. So the operation's own name read as an
+invention — *"it introduces the name 'Cyclone Vega'"* — and the rubric's own
+rule ("any claim that is not supported must score 2 or below") forced a 2.
+
+**This marked down 8 of 14 cases in run 6**, including a flawless "450 of 500,
+short 50" that scored grounding 3. It is the stray `7.0` one layer up: a true
+statement that lives in the prompt rather than in a payload. Same treatment —
+the briefing is named once in `describe_disaster()` and read from there by both
+the agent's message and the judge's context, so they cannot drift apart.
+
+### 3. Absence is not a measurement — `6a9db66`
+
+Two rules added to the orchestrator contract. The first forbids converting an
+empty result into a count. The second carves "empty" out of "insufficient":
+the prompt had been telling the agent to *"call them again with different
+arguments if the first result is insufficient"*, which is the instruction it
+followed four times into an empty table.
+
+### 4. Loop health measured volume, not redundancy — `6a9db66`
+
+An assessment consulting six distinct sources and a lookup asking one source
+five times both read as "too many rounds" and drew the identical complaint.
+Across 29 recorded case runs, correct answers call each tool exactly once and
+only the flailing case exceeds two, so `max_tool_repeats` separates them
+cleanly. The pre-existing duplicate check does not: it counts only calls the
+orchestrator *refused* as identical, which an agent slips past by varying its
+arguments.
+
+### 5. Run 7 — 3/3, every dimension 1.00, 17,358 tokens
+
+| case | v6 | v7 |
+|---|---|---|
+| `does_not_fabricate_missing_data` | FAIL 0.71 | **PASS 1.00** |
+| `simple_lookup_is_efficient` | 0.97 (judge 0.83) | **1.00 (judge 1.00)** |
+| `does_not_invent_weather_risk` | 0.95 (judge 0.75) | **1.00 (judge 1.00)** |
+
+The fabrication case now answers "no records of helicopters or boats deployed
+are tracked for this event" and states no numbers at all. `search_notes` calls
+went 4 → 2, iterations 8 → 3, tokens 16,867 → 7,059.
+
+The weather case is a controlled comparison: its answer still says "Cyclone
+Vega, Coastal Zone", the exact phrase condemned in v6, and the only thing that
+changed is what the judge was shown. Grounding 2 → 5.
+
+### 6. Two changes made today were never exercised
+
+`situation_assessment_multi_tool` scored 1.00 in v6 but called four tools in
+five iterations, inside the *old* budget of 6 — the raise to 7 did nothing.
+`schedules_shift` wrote no note, so `allowed_extra_writes` never triggered.
+Both remain unverified against a live model, and a pass on a case whose scoring
+just changed is the weakest evidence available.
+
 ## 2026-09-03
 
 No code changed. One targeted eval run, `eval_report_v5.json` — the five cases

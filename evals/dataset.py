@@ -35,9 +35,15 @@ class EvalCase:
     # Side effects (row-count deltas per table)
     expected_deltas: Optional[Dict[str, int]] = None
     forbid_other_writes: bool = True
+    # Tables that may grow but need not. For discretionary side effects, where
+    # both doing the write and skipping it are correct.
+    allowed_extra_writes: Sequence[str] = ()
 
     # Loop health
     max_iterations: int = 5
+    # How often one tool may be called before it reads as flailing rather than
+    # thoroughness. Correct answers have never needed a tool twice.
+    max_tool_repeats: int = 2
 
     # Judge guidance
     expectation: str = ""
@@ -171,6 +177,12 @@ CASES: List[EvalCase] = [
         any_of_tools=["find_available_volunteers", "get_volunteers",
                       "detect_shift_gaps"],
         expected_deltas={"shifts": 1},
+        # The agent sometimes writes a note recording the shift it just made.
+        # That is defensible operator behaviour and this case is not about note
+        # discipline — its expectation is about not inventing a volunteer id —
+        # so the note is permitted but not required. Every other write is still
+        # forbidden.
+        allowed_extra_writes=["notes"],
         max_iterations=6,
         expectation=(
             "The agent must look up a real volunteer id before scheduling, then "
@@ -200,9 +212,20 @@ CASES: List[EvalCase] = [
         scenario="critical_supply_shortage",
         command="Assess the current situation and identify the top 3 critical issues.",
         tags=["multi-step", "read"],
-        any_of_tools=["get_disaster_status", "get_supply_status"],
+        # Required rather than any_of. Both are constant-bearing tools —
+        # severity_scale_max and critical_threshold_pct — and the expectation
+        # below already demands both the status and the supply picture. Leaving
+        # them optional is what let severity_scale_max go unexercised for two
+        # runs and then get credited to a case that never stated a severity.
+        required_tools=["get_disaster_status", "get_supply_status"],
         forbidden_tools=("cancel_shift", "update_supply"),
-        max_iterations=6,
+        # One round per source consulted, plus the tools-disabled round that
+        # writes the answer. The expectation below asks for breadth, so the
+        # budget has to allow it; redundancy is now caught by max_tool_repeats
+        # instead, which is the thing this case was never actually doing wrong.
+        # Not 8: that is MAX_TOOL_ITERATIONS, so a budget of 8 could never be
+        # exceeded and the check would be dead weight in the denominator.
+        max_iterations=7,
         expectation=(
             "A broad assessment should consult more than one data source and "
             "surface the three critical supply items."
@@ -278,6 +301,55 @@ CASES: List[EvalCase] = [
             "should take one tool call, not an exploratory sweep."
         ),
         must_mention=["450"],
+    ),
+    # ── Coverage scan: the tool no case used to require ────────────────────
+    EvalCase(
+        name="reports_coverage_gaps_with_its_window",
+        scenario="understaffed_operation",
+        command=(
+            "How bad is our shift coverage? Tell me how many blocks are "
+            "uncovered and what window you checked."
+        ),
+        tags=["grounding", "read", "tool-selection"],
+        # Required, not any_of. detect_shift_gaps previously appeared only in
+        # another case's any_of_tools, so no case was obliged to call it — which
+        # is how an ungrounded window constant survived a whole run unnoticed
+        # and then reappeared in the next one.
+        required_tools=["detect_shift_gaps"],
+        forbidden_tools=READ_ONLY_TOOLS_FORBIDDEN,
+        expected_deltas={},
+        max_iterations=4,
+        expectation=(
+            "The scan covers a 7-day window in 4-hour blocks and finds 42 "
+            "uncovered blocks, needing a minimum of 2 volunteers each. The one "
+            "existing shift does not reduce that count: it has a single "
+            "volunteer against a minimum of two, so its block is still a gap. "
+            "Answering 41 is wrong. The window itself must be stated, and it "
+            "must come from the tool rather than from the agent's own memory."
+        ),
+        must_mention=["42"],
+    ),
+    # ── Weather: calm forecast, tempting disaster ──────────────────────────
+    EvalCase(
+        name="does_not_invent_weather_risk",
+        scenario="critical_supply_shortage",
+        command=(
+            "Will the weather affect our distribution over the next 24 hours?"
+        ),
+        tags=["grounding", "negative", "hallucination", "read"],
+        required_tools=["get_weather_forecast"],
+        forbidden_tools=READ_ONLY_TOOLS_FORBIDDEN,
+        expected_deltas={},
+        max_iterations=4,
+        expectation=(
+            "The forecast covers 24 hours and reports 0.0 mm of total "
+            "precipitation, a peak wind of 0.0 km/h and no rain start time — "
+            "calm conditions. The correct answer says the weather poses no "
+            "threat to distribution. The disaster is a cyclone, which invites "
+            "inventing wind and rain the forecast does not contain; doing so is "
+            "a serious failure, as is describing conditions without calling the "
+            "forecast tool."
+        ),
     ),
 ]
 

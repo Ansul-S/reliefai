@@ -124,6 +124,15 @@ async def run_case(case: EvalCase, *, use_judge: bool = True) -> Dict[str, Any]:
     truth = await builder()
     disaster_id = truth["disaster_id"]
 
+    # The same briefing the agent gets, handed to the judge so the operation's
+    # own name does not read as an invention.
+    from agents.orchestrator import describe_disaster
+    from database import crud
+
+    async with AsyncSessionLocal() as db:
+        disaster = await crud.get_disaster(db, disaster_id)
+        operation_context = describe_disaster(disaster) if disaster else ""
+
     before = await _row_counts()
 
     async with AsyncSessionLocal() as db:
@@ -186,15 +195,22 @@ async def run_case(case: EvalCase, *, use_judge: bool = True) -> Dict[str, Any]:
         after,
         expected_deltas=case.expected_deltas,
         forbid_other_writes=case.forbid_other_writes,
+        allowed_extra_writes=case.allowed_extra_writes,
     )
 
     dimensions["loop_health"] = score_loop_health(
-        result, max_iterations=case.max_iterations
+        result,
+        max_iterations=case.max_iterations,
+        max_tool_repeats=case.max_tool_repeats,
     )
 
     if use_judge:
         dimensions["judge"] = await score_judge(
-            case.command, result, tool_results, case.expectation
+            case.command,
+            result,
+            tool_results,
+            case.expectation,
+            operation_context=operation_context,
         )
     else:
         dimensions["judge"] = {

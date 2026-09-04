@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
 from agents._groq_client import _call_groq
@@ -229,6 +230,7 @@ def score_side_effects(
     after: Dict[str, int],
     expected_deltas: Optional[Dict[str, int]] = None,
     forbid_other_writes: bool = True,
+    allowed_extra_writes: Sequence[str] = (),
 ) -> Dict[str, Any]:
     """
     Compare database row counts before and after the run.
@@ -236,8 +238,18 @@ def score_side_effects(
     ``expected_deltas`` gives the minimum change per table (e.g. ``{"tasks": 1}``).
     With ``forbid_other_writes`` every unlisted table must be unchanged, which is
     how read-only commands are held to being read-only.
+
+    ``allowed_extra_writes`` names tables that *may* grow without being required
+    to. Without it the choice is all or nothing: either every unlisted table is
+    frozen, or `forbid_other_writes=False` stops checking any of them. Neither
+    fits a case where one specific side effect is discretionary — an agent
+    writing a note to record the shift it just scheduled is reasonable, and so
+    is not writing one, but a stray broadcast is still a failure. Only growth is
+    permitted; a row disappearing from an allowed table is still reported, since
+    "you may add a note" is not "you may delete one".
     """
     expected_deltas = expected_deltas or {}
+    allowed = set(allowed_extra_writes or ())
     actual = {k: after.get(k, 0) - before.get(k, 0) for k in set(before) | set(after)}
 
     problems: List[str] = []
@@ -254,8 +266,9 @@ def score_side_effects(
             if table in expected_deltas:
                 continue
             checks += 1
-            if delta != 0:
-                problems.append(f"{table}: unexpected change of {delta:+d}")
+            if delta == 0 or (table in allowed and delta > 0):
+                continue
+            problems.append(f"{table}: unexpected change of {delta:+d}")
 
     score = 1.0 if checks == 0 else max(0.0, (checks - len(problems)) / checks)
 
@@ -276,13 +289,32 @@ def score_loop_health(
     result: Dict[str, Any],
     max_iterations: int = 5,
     allow_tool_errors: bool = False,
+    max_tool_repeats: int = 2,
 ) -> Dict[str, Any]:
-    """Penalise failed tool calls, runaway loops, and repeated identical calls."""
+    """
+    Penalise failed tool calls, runaway loops, and repeated identical calls.
+
+    ``max_tool_repeats`` bounds how often one tool may be called in a run, and
+    exists because the iteration count alone cannot tell thoroughness from
+    flailing. Both readings look like "too many rounds": an assessment that
+    consults six distinct sources, and a lookup that asks the same source five
+    times and learns nothing. Counting per-tool repeats separates them — across
+    every run recorded so far, correct answers call each tool exactly once, and
+    only the case that re-queries missing data goes above two.
+
+    Note the ``repeats`` check below is a different thing: it counts calls the
+    orchestrator actively *refused* as identical. An agent that varies its
+    arguments slips past that check while still learning nothing, which is
+    exactly what happened in ``does_not_fabricate_missing_data``.
+    """
     trace = result.get("trace", [])
     tool_steps = [t for t in trace if t.get("step") == "tool"]
     failed = [t for t in tool_steps if not t.get("ok")]
     repeats = [t for t in failed if "Repeated call" in str(t.get("error", ""))]
     iterations = result.get("iterations", 0)
+
+    counts = Counter(_tools_used(trace))
+    overused = {n: c for n, c in counts.items() if c > max_tool_repeats}
 
     problems: List[str] = []
     if failed and not allow_tool_errors:
@@ -293,8 +325,11 @@ def score_loop_health(
         problems.append(f"{iterations} iterations exceeds budget of {max_iterations}")
     if not tool_steps:
         problems.append("no tools were called at all")
+    if overused:
+        worst = ", ".join(f"{n} x{c}" for n, c in sorted(overused.items()))
+        problems.append(f"redundant calls ({worst}), limit {max_tool_repeats}")
 
-    checks = 4
+    checks = 5
     score = max(0.0, (checks - len(problems)) / checks)
 
     return {
@@ -315,12 +350,15 @@ def score_loop_health(
 
 _JUDGE_SYSTEM = (
     "You are a strict evaluator of an AI disaster-relief coordination agent. "
-    "You are given an operator's command, the raw data the agent's tools "
-    "returned, and the agent's final answer.\n\n"
+    "You are given an operator's command, the operation context the agent was "
+    "briefed with, the raw data the agent's tools returned, and the agent's "
+    "final answer.\n\n"
     "Score each criterion from 1 to 5:\n"
     "  relevance   — does the answer actually address the command?\n"
-    "  grounding   — is every claim supported by the tool data? Any claim that "
-    "is not supported must score 2 or below.\n"
+    "  grounding   — is every claim supported by the tool data, or by the "
+    "operation context the agent was given? Any claim supported by neither "
+    "must score 2 or below. Restating the operation's own identity — its name, "
+    "type, location, severity or status — is NOT an unsupported claim.\n"
     "  usefulness  — would a relief coordinator be able to act on this?\n\n"
     "Be harsh. A fluent answer that states unsupported facts is a bad answer. "
     "An answer that correctly reports 'no problems found' when the data shows "
@@ -330,11 +368,40 @@ _JUDGE_SYSTEM = (
 )
 
 
+def _build_judge_message(
+    command: str,
+    tool_blob: str,
+    answer_blob: str,
+    expectation: str = "",
+    operation_context: str = "",
+) -> str:
+    """
+    Assemble what the judge sees. Pure, so the contents can be asserted on.
+
+    ``operation_context`` is the briefing the agent itself was given. Without
+    it the judge sees the operation's own name in the answer, cannot find it in
+    any tool payload, and scores a true statement as unsupported — which in run
+    6 marked down 8 of 14 cases, several of them otherwise flawless.
+    """
+    parts = [f"OPERATOR COMMAND:\n{command}\n"]
+    if operation_context:
+        parts.append(
+            "OPERATION CONTEXT THE AGENT WAS GIVEN (established fact, not a "
+            f"claim it invented):\n{operation_context}\n"
+        )
+    parts.append(f"TOOL DATA THE AGENT RETRIEVED:\n{tool_blob}\n")
+    parts.append(f"AGENT'S FINAL ANSWER:\n{answer_blob}\n")
+    if expectation:
+        parts.append(f"WHAT A CORRECT ANSWER SHOULD DO:\n{expectation}\n")
+    return "\n".join(parts)
+
+
 async def score_judge(
     command: str,
     answer: Dict[str, Any],
     tool_results: Any,
     expectation: str = "",
+    operation_context: str = "",
 ) -> Dict[str, Any]:
     """LLM-as-judge over relevance, grounding and operational usefulness."""
     tool_blob = json.dumps(tool_results, default=str)
@@ -350,14 +417,9 @@ async def score_judge(
         default=str,
     )
 
-    user_message = (
-        f"OPERATOR COMMAND:\n{command}\n\n"
-        f"TOOL DATA THE AGENT RETRIEVED:\n{tool_blob}\n\n"
-        f"AGENT'S FINAL ANSWER:\n{answer_blob}\n"
+    user_message = _build_judge_message(
+        command, tool_blob, answer_blob, expectation, operation_context
     )
-    if expectation:
-        user_message += f"\nWHAT A CORRECT ANSWER SHOULD DO:\n{expectation}\n"
-
     try:
         verdict = await _call_groq(_JUDGE_SYSTEM, user_message)
     except Exception as exc:  # noqa: BLE001

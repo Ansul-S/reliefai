@@ -59,6 +59,16 @@ _SYSTEM_PROMPT = (
     "call them again with different arguments if the first result is "
     "insufficient. When several independent facts are needed, request the "
     "corresponding tools together in one turn so they run concurrently.\n\n"
+    "An empty result is an answer, not a failure. A result that is merely "
+    "empty is not insufficient, and rephrasing the query will not make absent "
+    "data appear: when a source comes back empty twice, the absence is "
+    "established — stop querying it.\n\n"
+    "Never convert an absence into a measurement. If the operation does not "
+    "track something, say that it is not tracked. \"No helicopters are "
+    "recorded for this operation\" is true; \"the system records 0 "
+    "helicopters deployed\" is a fabrication, because nothing was ever "
+    "counted. A count of zero is a real reading that a tool returned; an empty "
+    "table is the absence of any reading at all.\n\n"
     "Typical approach: establish the situation first, then investigate the "
     "specific areas the command concerns, then take corrective action (creating "
     "tasks, scheduling shifts, sending broadcasts) when the command calls for "
@@ -74,8 +84,10 @@ _FINAL_RESPONSE_INSTRUCTION = (
     "citing concrete numbers from the tool results\n"
     '  "alerts": array of strings — urgent issues needing human attention now\n'
     '  "next_recommended_actions": array of strings — concrete next steps\n\n'
-    "Base every statement on the tool results above. Respond with ONLY the JSON "
-    "object, no markdown fences and no commentary."
+    "Base every statement on the tool results above. If the command asks about "
+    "something the operation does not track, say so plainly rather than "
+    "reporting a count of zero for it. Respond with ONLY the JSON object, no "
+    "markdown fences and no commentary."
 )
 
 
@@ -92,14 +104,25 @@ def _tool_call_signature(name: str, raw_args: Any) -> str:
         return f"{name}:{raw_args}"
 
 
-def _build_user_message(disaster: Any, command: str) -> str:
+def describe_disaster(disaster: Any) -> str:
+    """
+    The operation facts the agent is told before it reads any tool.
+
+    Exposed because anything scoring the agent needs the same facts. An eval
+    judge that sees only tool payloads reads "Cyclone Vega" as an invention and
+    marks a true statement unsupported — the same failure as a constant that
+    lives in a docstring instead of a payload, one layer up.
+    """
     return (
         f"Disaster id={disaster.id} — {disaster.name!r} "
         f"({disaster.type}, {disaster.location}, "
         f"severity {disaster.severity}/{SEVERITY_SCALE_MAX}, "
-        f"status {disaster.status}).\n\n"
-        f"COMMAND: {command}"
+        f"status {disaster.status})."
     )
+
+
+def _build_user_message(disaster: Any, command: str) -> str:
+    return f"{describe_disaster(disaster)}\n\nCOMMAND: {command}"
 
 
 def _unique_result_key(results: Dict[str, Any], tool_name: str) -> str:

@@ -315,6 +315,53 @@ def test_side_effects_allows_collateral_writes_when_disabled():
     assert result["passed"]
 
 
+def test_side_effects_permits_an_allowed_extra_write():
+    """A discretionary note alongside the expected shift is not a failure."""
+    result = score_side_effects(
+        {"shifts": 0, "notes": 0},
+        {"shifts": 1, "notes": 1},
+        expected_deltas={"shifts": 1},
+        allowed_extra_writes=["notes"],
+    )
+    assert result["passed"], result["detail"]
+
+
+def test_side_effects_allowed_extra_write_is_not_required():
+    """Skipping the optional note is equally correct."""
+    result = score_side_effects(
+        {"shifts": 0, "notes": 0},
+        {"shifts": 1, "notes": 0},
+        expected_deltas={"shifts": 1},
+        allowed_extra_writes=["notes"],
+    )
+    assert result["passed"], result["detail"]
+
+
+def test_allowed_extra_writes_does_not_licence_other_tables():
+    """Permitting a note must not quietly permit a broadcast."""
+    result = score_side_effects(
+        {"shifts": 0, "notes": 0, "broadcasts": 0},
+        {"shifts": 1, "notes": 1, "broadcasts": 1},
+        expected_deltas={"shifts": 1},
+        allowed_extra_writes=["notes"],
+    )
+    assert not result["passed"]
+    assert "broadcasts" in result["detail"]
+    assert "notes" not in result["detail"]
+
+
+def test_allowed_extra_writes_still_reports_deletions():
+    """`you may add a note` is not `you may delete one`."""
+    result = score_side_effects(
+        {"shifts": 0, "notes": 2},
+        {"shifts": 1, "notes": 1},
+        expected_deltas={"shifts": 1},
+        allowed_extra_writes=["notes"],
+    )
+    assert not result["passed"]
+    assert "notes: unexpected change of -1" in result["detail"]
+
+
 # ---------------------------------------------------------------------------
 # Loop health
 # ---------------------------------------------------------------------------
@@ -353,6 +400,55 @@ def test_loop_health_flags_a_run_that_called_no_tools():
     assert "no tools" in result["detail"]
 
 
+# The two runs below are the real traces from eval_report_v5.json. Before
+# max_tool_repeats they drew the identical complaint from this scorer — "N
+# iterations exceeds budget" — despite being opposite behaviours.
+
+
+def test_loop_health_flags_the_same_tool_queried_over_and_over():
+    """does_not_fabricate_missing_data: 8 calls, 4 distinct, search_notes x5."""
+    result = score_loop_health(
+        {
+            "iterations": 8,
+            "trace": _trace(
+                "search_notes", "search_notes", "get_supply_status", "list_tasks",
+                "get_shifts", "search_notes", "search_notes", "search_notes",
+            ),
+        },
+        max_iterations=4,
+    )
+    assert not result["passed"]
+    assert "redundant calls (search_notes x5)" in result["detail"]
+
+
+def test_loop_health_does_not_punish_consulting_many_distinct_sources():
+    """situation_assessment_multi_tool: 6 sources, no repeats, within budget."""
+    result = score_loop_health(
+        {
+            "iterations": 7,
+            "trace": _trace(
+                "get_disaster_status", "get_supply_status", "get_shifts",
+                "get_volunteers", "get_weather_forecast", "detect_shift_gaps",
+            ),
+        },
+        max_iterations=7,
+    )
+    assert result["passed"], result["detail"]
+
+
+def test_loop_health_separates_breadth_from_flailing():
+    """The discriminator: same call count, opposite verdicts."""
+    breadth = score_loop_health(
+        {"iterations": 5, "trace": _trace("a", "b", "c", "d")}, max_iterations=6
+    )
+    flailing = score_loop_health(
+        {"iterations": 5, "trace": _trace("a", "a", "a", "a")}, max_iterations=6
+    )
+    assert breadth["passed"], breadth["detail"]
+    assert not flailing["passed"]
+    assert breadth["score"] > flailing["score"]
+
+
 # ---------------------------------------------------------------------------
 # Dataset sanity
 # ---------------------------------------------------------------------------
@@ -381,6 +477,133 @@ def test_grounding_ignores_forward_looking_recommendations():
     assert score_grounding(_claim_text(result), SUPPLY_RESULTS)["passed"]
     # The full text is still available for keyword expectations.
     assert "24-48 hours" in _answer_text(result)
+
+
+def test_orchestrator_contract_separates_absence_from_zero():
+    """
+    Run 6 regression. Asked how many helicopters were deployed against a
+    database with no helicopter concept, the agent answered "get_shifts
+    returned no entries, so the system records 0 helicopters and 0 boats
+    deployed". The judge scored that 0.17 and was right: nothing was ever
+    counted, so a count of zero is a fabricated reading.
+
+    The numeric grounding scorer cannot catch this — it scored the same answer
+    1.00, because 0 does appear in the tool output. The contract is the only
+    place this can be fixed.
+    """
+    from agents.orchestrator import _FINAL_RESPONSE_INSTRUCTION, _SYSTEM_PROMPT
+
+    combined = _SYSTEM_PROMPT + _FINAL_RESPONSE_INSTRUCTION
+    assert "not tracked" in combined
+    assert "absence into a measurement" in _SYSTEM_PROMPT
+    # And the answer contract must repeat it, since that is where the
+    # fabricated frame was actually written.
+    assert "count of zero" in _FINAL_RESPONSE_INSTRUCTION
+
+
+def test_orchestrator_does_not_invite_requerying_an_empty_source():
+    """
+    The prompt told the agent to "call them again with different arguments if
+    the first result is insufficient", and it did — search_notes four times
+    over an empty table, burning the full 8-round budget. Empty has to be
+    carved out of "insufficient" explicitly.
+    """
+    from agents.orchestrator import _SYSTEM_PROMPT
+
+    assert "empty is not insufficient" in _SYSTEM_PROMPT
+    assert "empty twice" in _SYSTEM_PROMPT
+
+
+def test_judge_is_shown_the_operation_context():
+    """
+    Run 6 marked down 8 of 14 cases because the judge saw the operation's own
+    name in the answer, could not find it in any tool payload, and called it
+    unsupported — "it introduces the name 'Cyclone Vega'". The agent was told
+    that name before it called anything.
+    """
+    from evals.scorers import _build_judge_message
+
+    message = _build_judge_message(
+        command="Any shortages?",
+        tool_blob='{"supplies": []}',
+        answer_blob='{"orchestrator_summary": "Cyclone Vega is stable."}',
+        operation_context="Disaster id=1 — 'Cyclone Vega' (cyclone, Coastal Zone, severity 4/5, status active).",
+    )
+    assert "Cyclone Vega" in message.split("AGENT'S FINAL ANSWER")[0]
+    assert "OPERATION CONTEXT" in message
+
+
+def test_judge_message_omits_the_context_block_when_there_is_none():
+    from evals.scorers import _build_judge_message
+
+    message = _build_judge_message(
+        command="Any shortages?",
+        tool_blob="{}",
+        answer_blob="{}",
+    )
+    assert "OPERATION CONTEXT" not in message
+    assert "WHAT A CORRECT ANSWER SHOULD DO" not in message
+
+
+def test_judge_rubric_permits_restating_the_operation_identity():
+    from evals.scorers import _JUDGE_SYSTEM
+
+    assert "operation context" in _JUDGE_SYSTEM.lower()
+    assert "NOT an unsupported claim" in _JUDGE_SYSTEM
+
+
+def test_agent_and_judge_read_the_same_operation_facts():
+    """One source, so the briefing and the yardstick cannot drift apart."""
+    from types import SimpleNamespace
+
+    from agents.orchestrator import _build_user_message, describe_disaster
+
+    disaster = SimpleNamespace(
+        id=1, name="Cyclone Vega", type="cyclone",
+        location="Coastal Zone", severity=4, status="active",
+    )
+    context = describe_disaster(disaster)
+    assert context in _build_user_message(disaster, "Any shortages?")
+    assert "severity 4/5" in context
+
+
+def test_constant_bearing_tools_are_required_by_some_case():
+    """
+    Every tool that returns a constant the agent quotes must be *required* by at
+    least one case, not merely allowed by `any_of_tools`.
+
+    Tool choice belongs to the model, so a tool that no case requires may simply
+    not get called. That is not hypothetical: the ungrounded `7.0` from
+    `detect_shift_gaps` vanished from a run because the agent picked a different
+    tool, which read as a fix and was not one, and `severity_scale_max` was
+    later confirmed only because a case happened to state a severity. This test
+    is the structural guard those two incidents argue for.
+    """
+    from evals.dataset import CASES
+
+    required = {t for case in CASES for t in case.required_tools}
+    for tool in (
+        "detect_shift_gaps",       # window_days, block_hours, min_volunteers
+        "get_supply_status",       # critical_threshold_pct
+        "get_disaster_status",     # severity_scale_max
+        "get_weather_forecast",    # the only tool leaving the database
+    ):
+        assert tool in required, f"no case requires {tool}"
+
+
+def test_offline_weather_fixture_matches_what_the_case_expects():
+    """
+    The weather case's expectation quotes the fixture's numbers, so pin them.
+    If the fixture ever grows rain, the case would start failing correct answers
+    for stating conditions that really are in the payload.
+    """
+    from mcp_server.weather import _OFFLINE_PAYLOAD
+
+    summary = _OFFLINE_PAYLOAD["summary"]
+    assert summary["total_precipitation"] == 0.0
+    assert summary["peak_wind_speed"] == 0.0
+    assert summary["rain_starts_at"] is None
+    assert summary["hours_covered"] == 24
 
 
 def test_every_case_points_at_a_real_scenario():

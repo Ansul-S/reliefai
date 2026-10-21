@@ -234,6 +234,33 @@ def test_grounding_tolerates_thousands_separators():
     assert result["passed"], result["detail"]
 
 
+ID_RESULTS = {
+    "get_supply_status": [
+        {"id": 3, "disaster_id": 1, "item_name": "Rice",
+         "quantity_needed": 50.0, "quantity_available": 40.0},
+    ]
+}
+
+
+def test_grounding_takes_no_arithmetic_from_identifiers():
+    """
+    Regression: ids joined the derived arithmetic, so 50 - 3 = 47 and
+    40 + 1 = 41 counted as grounded — meaningless sums that excused invented
+    counts. On a real payload this alone accepted about 20 of every 97 small
+    integers.
+    """
+    for invented in ("47", "41", "53", "39"):
+        result = score_grounding(f"We have {invented} units of rice.", ID_RESULTS)
+        assert not result["passed"], (invented, result["detail"])
+
+
+def test_grounding_still_accepts_identifiers_and_real_arithmetic():
+    result = score_grounding(
+        "Supply 3 (Rice) is short by 10 units: 40 of 50, 80% of need.", ID_RESULTS
+    )
+    assert result["passed"], result["detail"]
+
+
 # ---------------------------------------------------------------------------
 # Tool selection
 # ---------------------------------------------------------------------------
@@ -604,6 +631,29 @@ def test_offline_weather_fixture_matches_what_the_case_expects():
     assert summary["peak_wind_speed"] == 0.0
     assert summary["rain_starts_at"] is None
     assert summary["hours_covered"] == 24
+
+
+async def test_coverage_case_expectation_matches_the_real_scan(db):
+    """
+    reports_coverage_gaps_with_its_window demands "42". Pin that to what the
+    real tool returns on the real scenario, so a change to the scan cannot
+    quietly turn a correct answer into a failure.
+    """
+    import json
+
+    from agents.tool_registry import execute_tool
+    from evals.dataset import CASES_BY_NAME
+    from evals.scenarios import SCENARIOS
+
+    case = CASES_BY_NAME["reports_coverage_gaps_with_its_window"]
+    truth = await SCENARIOS[case.scenario]()
+    record = await execute_tool(
+        "detect_shift_gaps", json.dumps({"disaster_id": truth["disaster_id"]})
+    )
+    payload = json.loads(record["result"])
+
+    assert payload["gap_count"] == 42
+    assert "42" in case.must_mention
 
 
 def test_every_case_points_at_a_real_scenario():

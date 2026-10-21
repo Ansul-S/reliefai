@@ -147,6 +147,53 @@ async def test_gap_payload_carries_its_scan_parameters(seeded_disaster):
     assert isinstance(payload["gaps"], list)
 
 
+async def _gap_fixture(db, monkeypatch, now):
+    """A fresh disaster with the scan's clock fixed at *now*."""
+    from datetime import timedelta
+
+    monkeypatch.setattr(crud, "_utcnow", lambda: now)
+    disaster = await crud.create_disaster(db, "Gap Probe", "flood", "Testville", 2)
+    volunteer = await crud.create_volunteer(db, "Solo Volunteer", "+10000000000", "solo@example.com")
+    await db.commit()
+    return disaster.id, volunteer.id, timedelta
+
+
+async def test_gap_scan_starts_at_the_block_in_progress(db, monkeypatch):
+    """
+    Regression: the window started at 00:00 today, so blocks that had already
+    ended were reported as gaps to fill.
+    """
+    from datetime import datetime, timezone
+
+    now = datetime(2030, 1, 1, 10, 30, tzinfo=timezone.utc)
+    did, _, _ = await _gap_fixture(db, monkeypatch, now)
+
+    gaps = await crud.detect_shift_gaps(db, did)
+
+    assert (gaps[0]["date"], gaps[0]["hour_block"]) == ("2030-01-01", 8)
+    assert len(gaps) == crud.SHIFT_GAP_WINDOW_DAYS * 24 // crud.SHIFT_GAP_BLOCK_HOURS
+
+
+async def test_gap_scan_counts_people_not_shifts(db, monkeypatch):
+    """
+    Regression: one volunteer holding two overlapping shifts counted as two,
+    which closed a gap that a single person was covering.
+    """
+    from datetime import datetime, timezone
+
+    now = datetime(2030, 1, 1, 8, 0, tzinfo=timezone.utc)
+    did, vid, timedelta = await _gap_fixture(db, monkeypatch, now)
+    for role in ("Triage", "Logistics"):
+        await crud.create_shift(db, did, vid, role, now, now + timedelta(hours=4))
+    await db.commit()
+
+    gaps = await crud.detect_shift_gaps(db, did)
+    first = gaps[0]
+
+    assert (first["date"], first["hour_block"]) == ("2030-01-01", 8)
+    assert first["volunteers_count"] == 1
+
+
 async def test_disaster_status_carries_the_severity_scale(seeded_disaster):
     record = await execute_tool(
         "get_disaster_status",

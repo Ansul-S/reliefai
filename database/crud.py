@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -34,6 +34,9 @@ SHIFT_GAP_MIN_VOLUNTEERS = 2
 
 # A supply is critical below this fraction of the quantity needed.
 CRITICAL_SUPPLY_THRESHOLD = 0.3
+
+# A volunteer at or above this many scheduled hours today gets no more shifts.
+MAX_VOLUNTEER_HOURS_PER_DAY = 12
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +195,16 @@ async def get_available_volunteers(
     disaster_id: int,
     required_skills: Optional[List[str]] = None,
 ) -> List[Volunteer]:
-    """Return active volunteers. If required_skills provided, filter by overlap."""
+    """
+    Return active volunteers. If required_skills provided, filter by overlap.
+
+    ``disaster_id`` is accepted but deliberately unused. Volunteers are one
+    pool shared across operations, and a volunteer is tied to an operation only
+    by holding a shift on it — so the people available to *assign* are exactly
+    those not yet tied to it. Scoping this to the disaster would hide them.
+    Hours already worked are not checked here; callers that care (the shift
+    agent) apply MAX_VOLUNTEER_HOURS_PER_DAY themselves.
+    """
     volunteers = await list_volunteers(db, active_only=True)
     if not required_skills:
         return volunteers
@@ -289,48 +301,74 @@ async def complete_shift(db: AsyncSession, shift_id: int) -> Optional[Shift]:
     return shift
 
 
+def _as_utc(value: datetime) -> datetime:
+    """SQLite hands back naive datetimes; every stored time is UTC."""
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
 async def detect_shift_gaps(
     db: AsyncSession, disaster_id: int
 ) -> List[Dict[str, Any]]:
     """
-    Over SHIFT_GAP_WINDOW_DAYS, examine every SHIFT_GAP_BLOCK_HOURS-hour block
-    and return blocks covered by fewer than SHIFT_GAP_MIN_VOLUNTEERS
-    non-cancelled shifts. Returns list of {date, hour_block, volunteers_count}.
+    Examine the next SHIFT_GAP_WINDOW_DAYS in SHIFT_GAP_BLOCK_HOURS-hour blocks
+    and return blocks staffed by fewer than SHIFT_GAP_MIN_VOLUNTEERS distinct
+    volunteers on non-cancelled shifts. Returns [{date, hour_block,
+    volunteers_count}, ...].
+
+    The window starts at the block in progress now and runs forward — 42
+    blocks at the defaults, whatever the time of day. Three things the earlier
+    version got wrong:
+
+      * it started at 00:00 today, so blocks that had already ended were
+        reported as gaps to fill;
+      * it counted shifts, so one volunteer holding two overlapping shifts
+        read as two people;
+      * it ran one query per block, 42 round trips per call.
     """
+    block = timedelta(hours=SHIFT_GAP_BLOCK_HOURS)
+    block_count = SHIFT_GAP_WINDOW_DAYS * 24 // SHIFT_GAP_BLOCK_HOURS
+
     now = _utcnow()
+    window_start = now.replace(
+        hour=now.hour - now.hour % SHIFT_GAP_BLOCK_HOURS,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    window_end = window_start + block * block_count
+
+    result = await db.execute(
+        select(Shift.volunteer_id, Shift.start_time, Shift.end_time).where(
+            and_(
+                Shift.disaster_id == disaster_id,
+                Shift.status.notin_(["cancelled"]),
+                Shift.start_time < window_end,
+                Shift.end_time > window_start,
+            )
+        )
+    )
+    shifts = [
+        (volunteer_id, _as_utc(start), _as_utc(end))
+        for volunteer_id, start, end in result.all()
+    ]
+
     gaps: List[Dict[str, Any]] = []
-
-    for day_offset in range(SHIFT_GAP_WINDOW_DAYS):
-        check_date = (now + timedelta(days=day_offset)).date()
-        for hour_block in range(0, 24, SHIFT_GAP_BLOCK_HOURS):
-            block_start = datetime(
-                check_date.year,
-                check_date.month,
-                check_date.day,
-                hour_block,
-                tzinfo=timezone.utc,
+    for index in range(block_count):
+        block_start = window_start + block * index
+        block_end = block_start + block
+        staffed = {
+            volunteer_id
+            for volunteer_id, start, end in shifts
+            if start < block_end and end > block_start
+        }
+        if len(staffed) < SHIFT_GAP_MIN_VOLUNTEERS:
+            gaps.append(
+                {
+                    "date": block_start.date().isoformat(),
+                    "hour_block": block_start.hour,
+                    "volunteers_count": len(staffed),
+                }
             )
-            block_end = block_start + timedelta(hours=SHIFT_GAP_BLOCK_HOURS)
-
-            result = await db.execute(
-                select(func.count(Shift.id)).where(
-                    and_(
-                        Shift.disaster_id == disaster_id,
-                        Shift.status.notin_(["cancelled"]),
-                        Shift.start_time < block_end,
-                        Shift.end_time > block_start,
-                    )
-                )
-            )
-            count = result.scalar_one()
-            if count < SHIFT_GAP_MIN_VOLUNTEERS:
-                gaps.append(
-                    {
-                        "date": check_date.isoformat(),
-                        "hour_block": hour_block,
-                        "volunteers_count": count,
-                    }
-                )
 
     return gaps
 

@@ -59,13 +59,28 @@ def _iter_numbers(value: Any) -> Iterable[float]:
                 continue
 
 
+def _is_identifier(key: Any) -> bool:
+    """A key that names a row rather than measuring anything."""
+    key = str(key)
+    return key == "id" or key.endswith("_id")
+
+
 def _record_numbers(value: Any) -> Iterable[List[float]]:
-    """Groups of numbers that share a record, so differences can be derived."""
+    """
+    Groups of numbers that share a record, so differences can be derived.
+
+    Identifiers are left out of the groups. They remain citable on their own
+    ("task 7" is grounded by _iter_numbers), but id ± quantity is never a claim
+    an agent should make, and with small ids it filled the grounded set with
+    small integers that excused invented counts.
+    """
     if isinstance(value, dict):
         own = [
             float(v)
-            for v in value.values()
-            if isinstance(v, (int, float)) and not isinstance(v, bool)
+            for k, v in value.items()
+            if isinstance(v, (int, float))
+            and not isinstance(v, bool)
+            and not _is_identifier(k)
         ]
         if own:
             yield own

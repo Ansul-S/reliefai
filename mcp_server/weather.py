@@ -27,7 +27,8 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Dict, Optional, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -167,16 +168,62 @@ async def _geocode(location: str) -> Optional[Dict[str, Any]]:
     return resolved
 
 
-def _summarise(hourly: Dict[str, Any], units: Dict[str, Any]) -> Dict[str, Any]:
+def _now_utc() -> datetime:
+    """The current time. A function so tests can fix the clock."""
+    return datetime.now(timezone.utc)
+
+
+def _first_upcoming_hour(
+    times: List[str], utc_offset_seconds: int, now: datetime
+) -> int:
+    """
+    Index of the current local hour in Open-Meteo's ``times``.
+
+    The hourly series starts at local midnight *today*, not at the present
+    hour, so the head of a 48-hour response is hours that have already passed.
+    Taking its first 24 entries described the calendar day rather than the next
+    24 hours: at 15:52 in Manila, 16 of the 24 "forecast" hours were history
+    and "the next six hours" was 00:00-05:00.
+
+    Timestamps are local and carry no offset, so the present is shifted into
+    the location's local time with ``utc_offset_seconds`` before comparing.
+    """
+    local_hour = (now + timedelta(seconds=utc_offset_seconds)).replace(
+        tzinfo=None, minute=0, second=0, microsecond=0
+    )
+    for index, stamp in enumerate(times):
+        try:
+            if datetime.fromisoformat(stamp) >= local_hour:
+                return index
+        except (TypeError, ValueError):
+            # Unreadable timestamps: keep the series as sent rather than guess.
+            return 0
+    return len(times)
+
+
+def _summarise(
+    hourly: Dict[str, Any],
+    units: Dict[str, Any],
+    *,
+    utc_offset_seconds: int = 0,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
     """
     Condense the raw hourly arrays into what a coordinator would actually ask.
 
     The agent is given a summary plus a short hourly window rather than 48
     rows: a wall of numbers invites the model to quote one at random.
+
+    With ``now``, the window starts at the current local hour; see
+    ``_first_upcoming_hour``. Without it the series is read from its start.
     """
-    times = hourly.get("time", [])[:24]
-    precip = [p or 0 for p in hourly.get("precipitation", [])[:24]]
-    wind = [w or 0 for w in hourly.get("wind_speed_10m", [])[:24]]
+    all_times = hourly.get("time", [])
+    start = 0 if now is None else _first_upcoming_hour(all_times, utc_offset_seconds, now)
+    end = start + 24
+
+    times = all_times[start:end]
+    precip = [p or 0 for p in hourly.get("precipitation", [])[start:end]]
+    wind = [w or 0 for w in hourly.get("wind_speed_10m", [])[start:end]]
 
     if not times:
         return {}
@@ -278,7 +325,12 @@ async def get_forecast(location: str) -> Dict[str, Any]:
             f"Forecast service unreachable ({type(exc).__name__}).", location
         )
 
-    summary = _summarise(payload.get("hourly", {}), payload.get("hourly_units", {}))
+    summary = _summarise(
+        payload.get("hourly", {}),
+        payload.get("hourly_units", {}),
+        utc_offset_seconds=payload.get("utc_offset_seconds") or 0,
+        now=_now_utc(),
+    )
     if not summary:
         return _unavailable("Forecast service returned no hourly data.", location)
 

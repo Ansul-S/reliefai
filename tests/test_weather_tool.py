@@ -173,3 +173,96 @@ def test_summary_reports_no_rain_as_none_not_zero():
 
 def test_summary_survives_empty_payload():
     assert weather._summarise({}, {}) == {}
+
+
+# ---------------------------------------------------------------------------
+# The forecast window starts now, not at midnight
+# ---------------------------------------------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+MANILA_OFFSET = 8 * 3600
+# 15:52 in Manila — the moment the defect was observed against the live API.
+MANILA_AFTERNOON = datetime(2026, 10, 20, 7, 52, tzinfo=timezone.utc)
+
+
+def _two_days_from_local_midnight(rain_hours=()):
+    """Open-Meteo's shape: 48 local hourly stamps starting at 00:00 today."""
+    start = datetime(2026, 10, 20, 0, 0)
+    times = [(start + timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M") for h in range(48)]
+    return {
+        "time": times,
+        "precipitation": [2.0 if h in rain_hours else 0.0 for h in range(48)],
+        "wind_speed_10m": [10.0] * 48,
+    }
+
+
+def test_window_starts_at_the_current_local_hour():
+    """
+    Regression: the first 24 entries were read as "the next 24 hours", but
+    the series starts at local midnight. At 15:52 the old window was 16 hours
+    of history, and "next_6_hours" was 00:00-05:00.
+    """
+    s = weather._summarise(
+        _two_days_from_local_midnight(), {},
+        utc_offset_seconds=MANILA_OFFSET, now=MANILA_AFTERNOON,
+    )
+    assert s["next_6_hours"][0]["time"] == "2026-10-20T15:00"
+    assert s["hours_covered"] == 24
+
+
+def test_rain_that_already_fell_is_not_forecast():
+    """Rain at 03:00 this morning is not rain coming in the next 24 hours."""
+    s = weather._summarise(
+        _two_days_from_local_midnight(rain_hours={3}), {},
+        utc_offset_seconds=MANILA_OFFSET, now=MANILA_AFTERNOON,
+    )
+    assert s["total_precipitation"] == 0.0
+    assert s["rain_starts_at"] is None
+
+
+def test_rain_tonight_is_forecast():
+    s = weather._summarise(
+        _two_days_from_local_midnight(rain_hours={21}), {},
+        utc_offset_seconds=MANILA_OFFSET, now=MANILA_AFTERNOON,
+    )
+    assert s["rain_starts_at"] == "2026-10-20T21:00"
+    assert s["total_precipitation"] == 2.0
+
+
+def test_a_series_entirely_in_the_past_is_no_forecast():
+    a_week_later = MANILA_AFTERNOON + timedelta(days=7)
+    assert weather._summarise(
+        _two_days_from_local_midnight(), {},
+        utc_offset_seconds=MANILA_OFFSET, now=a_week_later,
+    ) == {}
+
+
+async def test_get_forecast_reads_the_window_from_now(monkeypatch):
+    """End to end through get_forecast, with the clock fixed."""
+    forecast = {
+        "timezone": "Asia/Manila",
+        "utc_offset_seconds": MANILA_OFFSET,
+        "hourly": _two_days_from_local_midnight(rain_hours={2, 18}),
+        "hourly_units": {"precipitation": "mm", "wind_speed_10m": "km/h"},
+    }
+
+    class Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, params=None):
+            body = (
+                {"results": [{"latitude": 14.6, "longitude": 121.0,
+                              "name": "Manila", "country": "Philippines"}]}
+                if "geocoding" in url else forecast
+            )
+            return httpx.Response(200, json=body, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(weather.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(weather, "_now_utc", lambda: MANILA_AFTERNOON)
+
+    result = await weather.get_forecast("Manila")
+    assert result["available"] is True
+    assert result["summary"]["rain_starts_at"] == "2026-10-20T18:00"
+    assert result["summary"]["total_precipitation"] == 2.0

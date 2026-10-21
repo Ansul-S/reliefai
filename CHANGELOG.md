@@ -1,5 +1,210 @@
 # Changelog
 
+## 2026-10-20
+
+A review of the AI pipeline turned up the defects below; this entry fixes
+them. Tests 125 → 168. **No eval run** — each change is verified by tests and, where
+it touches an outside service, against that service, but none has yet been
+through a live model. "What still needs a live run" at the end lists what that
+leaves open.
+
+### 1. Eval reports under-counted what a run spent
+
+`run_suite` summed `usage.total_tokens` from each orchestrator result, which
+covers the orchestrator's own turns only. Two kinds of call never reached it:
+the LLM judge, and tools that call a model themselves (`generate_situation_report`
+and `translate_and_send_broadcast`). `_call_groq` returned no usage at all.
+
+That is a code-level candidate for the gap recorded on 2026-09-02, when v3 + v4
+reported 149,295 tokens and Groq's 429 said `Used 197886`. The two runs made
+about 22 uncounted calls (19 judge calls, comms twice, report once), which is
+the right order of magnitude for ~48.6k. It is not confirmed — the next run can
+settle it by comparing `metered_tokens` with Groq's own figure.
+
+The Groq client now carries a context-scoped meter, `track_usage()`. Every
+successful call reports into every meter open around it, including across
+`asyncio.gather`, so concurrent tool calls are counted.
+
+- The runner meters the agent run and the judge separately. Each case reports
+  `metered: {agent_tokens, judge_tokens, total_tokens, calls}` and the suite
+  reports `metered_tokens`. That includes cases that fail partway: v4's errored
+  case had spent loop tokens and recorded none.
+- `total_tokens` keeps its old meaning, so v3–v7 stay comparable.
+- The orchestrator reports `usage.tool_model_tokens`, and each tool step in the
+  trace that called a model carries `model_tokens`. `estimated_cost_usd` now
+  covers both the orchestrator's turns and the model calls inside tools.
+
+### 2. A refused duplicate answered under the wrong id
+
+The refusal record for a third identical call carried no `tool_call_id`, so
+its tool message fell back to the tool's *name*. The assistant turn's call
+`call_abc2` was answered by a message claiming to answer `get_supply_status`.
+Groq tolerated this — v3's fabrication case completed after a refusal — but the
+function-calling protocol requires every call id to be answered, and an
+OpenAI-compatible endpoint that enforces that would reject the request. The refusal now carries the
+call's id. A test asserts the pairing invariant over a full transcript and
+fails on the old code with `['get_supply_status'] == ['call_0']`.
+
+### 3. Retries multiplied, and their time was hidden — `agents/_groq_client.py`
+
+The SDK's own default, `max_retries=2` for 408/409/429/5xx, ran inside each of
+the wrapper's 4 attempts: up to 12 requests per logical call into a
+rate-limited bucket. The SDK's backoff also landed inside the measured
+`latency_ms`, so a slow-looking turn could really have been waiting.
+
+- The SDK client is built with `max_retries=0`. One function, `_create`, owns
+  retrying, for rate limits and for transient 5xx and connection errors.
+- Turns report `attempts` and `retry_wait_ms`, and `latency_ms` covers the
+  successful attempt only.
+- A **daily**-limit 429 is not retried, since the budget does not come back
+  within a 35-second schedule.
+- Non-retryable errors — a 400, bad auth — propagate unchanged, as before.
+- An exhausted transient failure is reported as `Groq request failed …`. The
+  runner now classifies that text as an environment failure, so it is
+  excluded from the pass rate.
+
+`_call_groq`'s exhaustion message said "100k/day … resets at midnight UTC".
+Both figures were wrong, and the reset time is the open rolling-window
+question. The message no longer guesses, and it never adds "per day" itself:
+the runner aborts a suite on that phrase, and a per-minute 429 that outlasts
+the retries must not read as a daily one.
+
+### 4. The final answer was parsed, not validated
+
+`OrchestratorResponse` existed in `schemas/models.py` but nothing used it. A
+string `alerts`, or an object per alert, went straight to the dashboard and the
+scorers. The three contract fields are now normalised:
+
+- `alerts` and `next_recommended_actions` become lists of strings, with
+  non-string items kept as JSON text.
+- A missing or empty `orchestrator_summary` is an error, not a successful run
+  with no answer in it.
+
+### 5. The weather forecast described the calendar day — `mcp_server/weather.py`
+
+Open-Meteo's hourly series starts at local midnight, and `_summarise` took its
+first 24 entries as "the next 24 hours". Checked against the live API for
+Manila at 15:52 local time: 16 of the 24 hours had already passed, and "next
+six hours" was 00:00–05:00. Rain that fell that morning counted as rain to come.
+
+The window now starts at the current local hour, using the payload's
+`utc_offset_seconds`. Five tests use a fixed clock. Against the live API at
+16:29 Manila time, the first hour returned is 16:00 and 24 hours are covered.
+
+### 6. The coverage scan reported the past and counted shifts — `database/crud.py`
+
+`detect_shift_gaps` had three faults:
+
+- It started at 00:00 today, so blocks that had already ended were reported as
+  gaps to fill.
+- It counted shifts, not people, so one volunteer on two overlapping shifts
+  satisfied a two-person minimum.
+- It made 42 queries per call.
+
+It is now a rolling window that starts at the block in progress. That is still
+42 blocks at the defaults, whatever the time of day, so
+`reports_coverage_gaps_with_its_window`'s "42" holds. A test pins that against
+the real tool on the real scenario. Coverage counts distinct volunteers and
+comes from one query. The payload shape is unchanged.
+
+### 7. Identifiers fed the grounding scorer's arithmetic — `evals/scorers.py`
+
+`_grounded_number_set` derives sums, differences and percentages within each
+record. It derived them from `id` and `*_id` fields too, so with small ids it
+filled the allowed set with small integers: `50 − 3`, `40 + 1`.
+
+Measured on `critical_supply_shortage` / `get_supply_status`, the scorer
+accepted **46 of 97** integers in 4–100. Without identifiers it accepts
+**26 of 97**, and the allowed set shrinks from 157 values to 82. Up to 1000, the
+figures go from 193 to 125 of 997. These are single measurements; timestamp
+fields vary between runs.
+
+Identifiers stay citable as bare values ("task 7"). No existing scorer test
+changed, so this tightens what the scorer excuses without narrowing what it
+can see. Over a quarter of small integers still pass by coincidence, which is a
+standing limit of number matching, and the reason the judge stays in the suite.
+
+### 8. The SMS limit lived only in the prompt — `agents/comms_agent.py`
+
+The README said the comms agent "enforces SMS limits". Only the prompt asked
+for it, and it asked for 160 characters, which is the GSM-7 limit. One
+character outside GSM-7 switches a message to UCS-2, which fits 70.
+
+`fit_sms` now holds each SMS version to a single segment:
+
+- The limit follows the encoding, and extension characters such as `{` count
+  double.
+- An over-long version is cut at the last word that fits and marked `...` —
+  `…` would itself force UCS-2.
+- The saved broadcast stores the enforced text, and `sms_checks` reports each
+  version's length, limit, encoding and whether it was trimmed.
+
+### 9. Model-proposed writes were unchecked, and model text reached the page raw
+
+`shift_agent` wrote whatever volunteer id the model named, and swallowed every
+failure with `except: pass`. Its prompt also asked for "minimum 2 volunteers
+per 6-hour block per zone" while the scan uses 4-hour blocks and the schema
+has no zones.
+
+- The prompt is now built from the same constants the scan uses.
+  `MAX_VOLUNTEER_HOURS_PER_DAY = 12` is named in `crud.py`.
+- A fill is written only if it names an eligible volunteer and a forward time
+  range. Rejections are returned in `fills_rejected` with their reason.
+- `supply_agent` likewise validates task priority and reports
+  `tasks_rejected`.
+- `shifts_created_in_db` and `tasks_created_in_db` are always present.
+
+The dashboard counted the model's own `gaps_filled` as filled shifts, and fell
+back to the model's `tasks_created` exactly when nothing had been written. It
+now counts rows written, and shows fills that were not booked.
+
+The same pass found model-originated strings reaching `innerHTML` unescaped:
+the shift agent's `coverage_status`, tool names the model requested (an unknown
+name is still recorded), and translation language keys. The report's Copy
+button escaped `"` but not `&`, so a literal `&quot;` in report markdown
+decoded back to `"` inside the `onclick` and ended the JS string. Report
+markdown is generated from operation data, including free-text notes that
+anyone with the public demo key can have the agent write, so that was an
+injection path into script. Every one now goes through `escHtml`, as does the
+disaster name in the operation selector — user input rather than model text,
+but writable by anyone holding the public key. `app.js` is `?v=9`.
+
+### 10. A merged line in requirements.txt, and no CI
+
+Commit `c377395` appended to a file with no trailing newline, producing
+`python-multipart>=0.0.9pytest>=8.0.0`. pip 26 rejects the file. Render's
+build tolerated it — live `/health` shows code from after `9eaac26` — so it was
+latent rather than an outage, but a fresh `run_local.sh` upgrades pip first and
+would have failed.
+
+The line is split. `.github/workflows/tests.yml` now runs pytest on every push
+and pull request, installing from `requirements.txt` on Python 3.11 to match
+the image. Simulated locally in a clean 3.11 environment, 168 pass.
+That environment resolved groq 1.7.0 and fastmcp 4.1.1, newer majors than the
+development venv's 1.1.2 and 3.2.0 — worth knowing given the unpinned floors.
+
+### 11. Smaller corrections
+
+- The README said 98 tests and 20 tools, and its tool table omitted the weather
+  tool. The landing page said 12 eval cases; there are 14.
+- `get_available_volunteers` ignores `disaster_id`. That is correct and is now
+  documented: volunteers are one shared pool, tied to an operation only by a
+  shift, so scoping the query to the disaster would hide exactly the people
+  available to assign. It would also break `volunteer_skill_search`'s expected
+  answer.
+
+### What still needs a live run
+
+- **`metered_tokens` against Groq's own count.** This is what settles whether
+  the 48k gap was the uncounted calls or the daily window.
+- **Grounding scores.** The scorer is stricter, so a case that once stated an
+  identifier-derived number would now fail. None is known to, but a scorer
+  change is not proven by unit tests.
+- **The shift agent's corrected prompt.** No eval case covers `/shifts/gaps`.
+- **The scan's new window.** The agent sees blocks starting now rather than at
+  midnight. The coverage case's figure is pinned by a test; the agent's
+  wording is not.
+
 ## 2026-09-04
 
 One code commit, `6a9db66`. Tests 110 → 125. Two eval runs: `eval_report_v6.json`

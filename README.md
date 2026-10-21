@@ -176,7 +176,7 @@ curl -X POST http://localhost:8000/disasters/1/command \
 ### 7. Run the checks
 
 ```bash
-pytest                  # 98 tests, no API key or network needed
+pytest                  # 168 tests, no API key or network needed
 python -m evals --list  # see the evaluation cases
 ```
 
@@ -291,6 +291,7 @@ plus tracing added alongside the tool-calling loop:
   "tools_called":   ["get_supply_status", "create_task"],  // the old key name
   "results":        { "get_supply_status": [...] },        // raw tool output
   "alerts":                   ["Water critically low"],
+  "run_notices":              [],   // remarks about the run, never claims
   "next_recommended_actions": ["Order 1600L of water"],
   "execution_time_ms": 51234,
 
@@ -304,7 +305,9 @@ plus tracing added alongside the tool-calling loop:
   ],
   "usage": {
     "input_tokens": 7442, "output_tokens": 784, "total_tokens": 8226,
-    "llm_ms": 94121, "tool_ms": 22, "estimated_cost_usd": 0.0017043
+    "tool_model_tokens": 0,
+    "llm_ms": 94121, "tool_ms": 22, "retry_wait_ms": 0,
+    "estimated_cost_usd": 0.0017043
   }
 }
 ```
@@ -313,6 +316,24 @@ plus tracing added alongside the tool-calling loop:
 compatibility, but it now lists the tools the model chose rather than a fixed
 roster of prompt agents. Unknown keys are ignored by the frontend, so the added
 fields are backward compatible.
+
+`alerts` and `next_recommended_actions` are always lists of strings, and a
+final answer with no `orchestrator_summary` is reported as an error rather than
+as a successful run with nothing in it.
+
+Token accounting, since two tools call a model of their own:
+
+| Field | Counts |
+|---|---|
+| `input_tokens` / `output_tokens` / `total_tokens` | the orchestrator's own turns |
+| `tool_model_tokens` | model calls made *inside* tools — `generate_situation_report` and `translate_and_send_broadcast`; the trace's tool step carries `model_tokens` |
+| `estimated_cost_usd` | both of the above |
+| `retry_wait_ms` | time spent backing off after 429s or transient provider errors; an LLM trace step that needed more than one attempt also records `attempts` |
+
+Retries live in one place, `agents/_groq_client.py`: up to 4 attempts with
+5/10/20-second backoff on rate limits and transient 5xx or connection errors.
+The SDK's own retries are switched off, so they cannot multiply with these. A
+daily-limit 429 is not retried — the budget does not come back in 35 seconds.
 
 ---
 
@@ -342,7 +363,13 @@ Run these in order after seeding. All use `POST /disasters/1/command` with `X-AP
 {"command": "Draft emergency broadcast in Filipino and English about Rizal High School evacuation center"}
 ```
 
-**Expected:** `translate_and_send_broadcast` renders 6 languages (EN/HI/TA/ID/TL/JA), enforces SMS limits, and saves the broadcast.
+**Expected:** `translate_and_send_broadcast` renders 6 languages (EN/HI/TA/ID/TL/JA), holds each SMS version to a single segment, and saves the broadcast.
+
+The SMS limit is enforced in code, not left to the prompt: 160 characters for
+plain Latin text (GSM-7), 70 once any character falls outside it (UCS-2), with
+GSM-7 extension characters such as `{` counting double. An over-long version is
+cut at the last word that fits and marked `...`; `sms_checks` reports each
+version's length, limit, encoding and whether it was trimmed.
 
 ### Command 4 — Donor Report
 
@@ -391,6 +418,7 @@ tool implementation.
 | `get_broadcasts` | `disaster_id` | Broadcast history |
 | `translate_and_send_broadcast` | `disaster_id`, `message`, `languages?`, `channel?` | Multilingual broadcast (wraps `comms_agent`) |
 | `generate_situation_report` | `disaster_id`, `report_type?` | Written report (wraps `report_agent`) |
+| `get_weather_forecast` | `disaster_id` | Next 24 hours from Open-Meteo, from the current local hour; the only tool that leaves the database |
 
 The FastMCP server also runs standalone for use by any MCP client:
 
@@ -434,6 +462,13 @@ Covered: tool discovery and schema generation, valid and invalid dispatch,
 unknown tools, malformed arguments, tool exceptions, oversized results, the
 multi-step tool loop, concurrent tool calls in one turn, duplicate-call
 suppression, the iteration ceiling, malformed final JSON, and the API contract.
+Below the loop, a scripted SDK client exercises the retry policy and token
+metering for real; the SMS limit, the coverage scan, the weather window and
+the validation of model-proposed writes each have their own tests.
+
+GitHub Actions runs the suite on every push and pull request
+(`.github/workflows/tests.yml`), installing from `requirements.txt` on Python
+3.11 to match the production image.
 
 ---
 
@@ -452,7 +487,9 @@ python -m evals --no-judge      # deterministic scorers only (free, fast)
 python -m evals --tag grounding --json report.json
 ```
 
-Exit status is non-zero if any case fails, so CI can gate on it.
+Exit status is non-zero if any case fails, so a CI job can gate on it — though
+none does today. The suite calls the real model and needs `GROQ_API_KEY` and
+daily budget, so it is run by hand; CI runs the pytest suite only.
 
 ### How a case works
 
@@ -496,10 +533,14 @@ it manufactures confidence.
 
 ### Budgeting a run
 
-Groq's free tier allows **8,000 tokens per minute** and **200,000 per day**. A
-single case costs roughly 5k-12k tokens, so a full 12-case run is around 150k —
-most of a day's budget, and enough to keep the suite in rate-limit backoff
-throughout. In practice:
+Groq's free tier allows **8,000 tokens per minute** and **200,000 per day**.
+Measured per-case cost in the orchestrator's own turns runs from about 4.3k
+(a single lookup) to 22.6k (a multi-tool assessment); the last full run, 14
+cases, spent 111,075 that way. The LLM judge and tools that call a model come
+on top of that. Reports now total them separately as `metered_tokens` — every
+model call a run made — alongside the orchestrator-only `total_tokens`, which
+keeps its old meaning so runs stay comparable. Plan on one full run a day. In
+practice:
 
 ```bash
 python -m evals --no-judge --delay 20     # ~25% cheaper, paced to the limiter
@@ -539,14 +580,18 @@ reliefai/
 │
 ├── mcp_server/                # MCP tool server — single source of truth
 │   ├── __init__.py
-│   └── tools.py               # 20 FastMCP tool definitions
+│   ├── tools.py               # 21 FastMCP tool definitions
+│   └── weather.py             # Open-Meteo forecast, cached, never raises
 │
 ├── schemas/                   # Pydantic v2 schemas
 │   ├── __init__.py
 │   └── models.py              # Request + response models
 │
 ├── static/                    # Frontend
-│   └── index.html             # Single-file ops dashboard
+│   ├── landing.html           # Served at /
+│   ├── index.html             # Ops dashboard, served at /dashboard
+│   ├── css/                   # app.css, landing.css
+│   └── js/app.js              # Dashboard logic
 │
 ├── evals/                     # Evaluation harness
 │   ├── scenarios.py           # Deterministic seeded worlds
@@ -555,11 +600,19 @@ reliefai/
 │   └── runner.py              # Execution and reporting
 │
 ├── tests/                     # pytest suite
-│   ├── conftest.py            # Test DB + scripted fake LLM
-│   ├── test_tool_registry.py  # Schemas, dispatch, failure modes
+│   ├── conftest.py            # Test DB, scripted fake LLM, scripted SDK client
+│   ├── test_tool_registry.py  # Schemas, dispatch, failure modes, gap scan
 │   ├── test_orchestrator_loop.py  # The tool-calling loop
-│   └── test_eval_scorers.py   # The scorers reject bad behaviour
+│   ├── test_groq_client.py    # Retry policy and token metering
+│   ├── test_eval_scorers.py   # The scorers reject bad behaviour
+│   ├── test_eval_runner.py    # The runner reports what a run really spent
+│   ├── test_grounded_constants_e2e.py  # Quoted constants trace end to end
+│   ├── test_comms_agent.py    # SMS single-segment limit
+│   ├── test_specialist_writes.py  # Model-proposed writes are validated
+│   ├── test_weather_tool.py   # Degradation and the forecast window
+│   └── test_ratelimit.py      # Throttling and the spend breaker
 │
+├── .github/workflows/tests.yml  # CI: pytest on every push
 ├── main.py                    # FastAPI application
 ├── seed_demo.py               # Optional: runs 5 live AI commands
 ├── run_local.sh               # One-command local setup

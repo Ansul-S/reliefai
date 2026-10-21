@@ -1,0 +1,31 @@
+# Runs the pytest suite: scripted model, throwaway SQLite, no network, no key.
+#
+# Installing from requirements.txt is part of the check — a malformed line
+# there once sat unnoticed because nothing installed from a clean environment.
+#
+# The eval suite is deliberately not run here. It calls the real model, needs
+# GROQ_API_KEY, and a full run spends more than half of Groq's free daily
+# token budget, so it is run by hand before changing a prompt, a tool
+# description or GROQ_MODEL.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Matches the production image (Dockerfile: python:3.11-slim).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - run: python -m pytest tests/ -q

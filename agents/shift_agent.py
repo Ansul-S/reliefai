@@ -17,11 +17,16 @@ from agents._groq_client import _call_groq
 
 _AGENT_NAME = "shift_agent"
 
+# Built from the same constants the gap scan uses. The prompt used to say
+# "minimum 2 volunteers per 6-hour block per zone" while the scan worked in
+# 4-hour blocks and the schema has no zones, so the model was asked to plan
+# against a rule the data never followed.
 _SYSTEM_PROMPT = (
     "You are Shift Coverage Agent for disaster relief. "
-    "Ensure 24/7 coverage with minimum 2 volunteers per 6-hour block per zone. "
-    "When gaps found: find best replacement (matching skills, not over 12hr today, "
-    "available at that time). "
+    f"Ensure 24/7 coverage with minimum {crud.SHIFT_GAP_MIN_VOLUNTEERS} "
+    f"volunteers per {crud.SHIFT_GAP_BLOCK_HOURS}-hour block. "
+    "When gaps found: find best replacement (matching skills, not over "
+    f"{crud.MAX_VOLUNTEER_HOURS_PER_DAY}hr today, available at that time). "
     "If no replacement available, escalate immediately. "
     "Track: Medical role needs medical/first_aid skills. "
     "Logistics needs driving/logistics. "
@@ -73,8 +78,11 @@ async def run_shift_agent(disaster_id: int, db: AsyncSession) -> Dict[str, Any]:
         for v in available_vols:
             hours_map[v.id] = await crud.get_volunteer_hours_today(db, v.id)
 
-        # Filter volunteers who still have capacity (< 12 hrs)
-        eligible_vols = [v for v in available_vols if hours_map.get(v.id, 0) < 12]
+        # Filter volunteers who still have capacity today
+        max_hours = crud.MAX_VOLUNTEER_HOURS_PER_DAY
+        eligible_vols = [
+            v for v in available_vols if hours_map.get(v.id, 0) < max_hours
+        ]
 
         vol_lines = "\n".join(
             _volunteer_line(v, hours_map.get(v.id, 0.0)) for v in eligible_vols
@@ -82,7 +90,8 @@ async def run_shift_agent(disaster_id: int, db: AsyncSession) -> Dict[str, Any]:
 
         gap_lines = "\n".join(
             f"  date={g['date']} hour_block={g['hour_block']:02d}:00 "
-            f"current_volunteers={g['volunteers_count']} (need>=2)"
+            f"current_volunteers={g['volunteers_count']} "
+            f"(need>={crud.SHIFT_GAP_MIN_VOLUNTEERS})"
             for g in gaps[:30]  # cap context length
         )
 
@@ -93,11 +102,13 @@ async def run_shift_agent(disaster_id: int, db: AsyncSession) -> Dict[str, Any]:
             f"severity={disaster.severity}/{SEVERITY_SCALE_MAX}\n\n"
             f"SHIFT GAPS DETECTED ({len(gaps)} total, showing first 30):\n"
             + (gap_lines or "  (no gaps — coverage looks good)")
-            + f"\n\nELIGIBLE VOLUNTEERS ({len(eligible_vols)} with <12 hrs today):\n"
+            + f"\n\nELIGIBLE VOLUNTEERS ({len(eligible_vols)} with "
+            f"<{max_hours} hrs today):\n"
             + (vol_lines or "  (none available)")
             + "\n\nFor each gap, recommend a volunteer assignment. "
             "Use ISO-8601 datetimes with UTC timezone for start_time and end_time. "
-            "The filled shift should cover the 4-hour block exactly. "
+            f"The filled shift should cover the {crud.SHIFT_GAP_BLOCK_HOURS}-hour "
+            "block exactly. "
             "If no eligible volunteer can fill a gap, add it to escalations_needed."
         )
 
@@ -122,10 +133,20 @@ async def run_shift_agent(disaster_id: int, db: AsyncSession) -> Dict[str, Any]:
     duration_ms = int((time.time() - start_ts) * 1000)
 
     # ── 4. Create recommended shifts in DB ────────────────────────────────
+    # The model's gaps_filled is a proposal. Only fills naming a volunteer
+    # from the eligible list it was shown, with a sane time range, are
+    # written; every other one is recorded with its reason instead of being
+    # dropped silently, so a coordinator can see what was not booked.
+    eligible_ids = {v.id for v in eligible_vols}
     shifts_created: List[Dict[str, Any]] = []
+    fills_rejected: List[Dict[str, Any]] = []
     for fill in result.get("gaps_filled", []):
         try:
             volunteer_id = int(fill["volunteer_id"])
+            if volunteer_id not in eligible_ids:
+                raise ValueError(
+                    f"volunteer {volunteer_id} was not among the eligible volunteers"
+                )
             role = str(fill.get("role", "general"))
             start_raw = fill.get("start_time", "")
             end_raw = fill.get("end_time", "")
@@ -138,6 +159,8 @@ async def run_shift_agent(disaster_id: int, db: AsyncSession) -> Dict[str, Any]:
                 start_dt = start_dt.replace(tzinfo=timezone.utc)
             if end_dt.tzinfo is None:
                 end_dt = end_dt.replace(tzinfo=timezone.utc)
+            if end_dt <= start_dt:
+                raise ValueError("end_time must be after start_time")
 
             new_shift = await crud.create_shift(
                 db,
@@ -157,11 +180,18 @@ async def run_shift_agent(disaster_id: int, db: AsyncSession) -> Dict[str, Any]:
                     "end_time": new_shift.end_time.isoformat(),
                 }
             )
-        except Exception:
-            pass  # best-effort; log later
+        except Exception as exc:  # noqa: BLE001 - recorded, never raised
+            fills_rejected.append({"fill": fill, "reason": str(exc)})
 
-    if shifts_created:
-        result["shifts_created_in_db"] = shifts_created
+    # Always present, so a consumer reads what was written rather than falling
+    # back to the model's own claim in gaps_filled.
+    result["shifts_created_in_db"] = shifts_created
+    result["fills_rejected"] = fills_rejected
+    result["coverage_rules"] = {
+        "block_hours": crud.SHIFT_GAP_BLOCK_HOURS,
+        "min_volunteers": crud.SHIFT_GAP_MIN_VOLUNTEERS,
+        "max_hours_per_day": max_hours,
+    }
 
     # ── 5. Log ─────────────────────────────────────────────────────────────
     await crud.create_log(
@@ -172,6 +202,7 @@ async def run_shift_agent(disaster_id: int, db: AsyncSession) -> Dict[str, Any]:
         output_summary=(
             f"gaps_filled={len(result.get('gaps_filled', []))} "
             f"shifts_in_db={len(shifts_created)} "
+            f"rejected={len(fills_rejected)} "
             f"escalations={len(result.get('escalations_needed', []))} "
             f"status={result.get('coverage_status', '')[:80]}"
         ),

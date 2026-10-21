@@ -144,7 +144,7 @@ async function loadDisasters() {
     const sel = document.getElementById('disaster-select');
     sel.innerHTML = disasters.length
       ? disasters.map(d =>
-          `<option value="${d.id}">[S${d.severity}] ${d.name}</option>`
+          `<option value="${d.id}">[S${d.severity}] ${escHtml(d.name)}</option>`
         ).join('')
       : '<option value="">No disasters found</option>';
 
@@ -316,7 +316,7 @@ function renderOrchestratorResult(result) {
   if (agents.length) {
     html += `<div class="agents-called-row mb-8">
       <span class="agents-called-label">Agents deployed:</span>
-      ${agents.map(a => `<span class="badge badge-${AGENT_COLORS[a] || 'gray'}">${a}</span>`).join('')}
+      ${agents.map(a => `<span class="badge badge-${AGENT_COLORS[a] || 'gray'}">${escHtml(a)}</span>`).join('')}
       <span class="mono text-muted" style="font-size:11px;">${result.execution_time_ms || 0}ms</span>
     </div>`;
   }
@@ -416,15 +416,18 @@ async function triggerGapDetection() {
     const data = await apiCall('POST', `/disasters/${currentDisasterId}/shifts/gaps`);
     const r = data.data || {};
     const gaps = r.gaps_found || [];
-    const filled = r.gaps_filled || [];
+    // Shifts actually written, not the model's own list of proposed fills.
+    const filled = r.shifts_created_in_db || [];
+    const rejected = r.fills_rejected || [];
     const escalations = r.escalations_needed || [];
     setHtml('gap-result-vol', `<div class="gap-result-card">
       <div class="card-title">Gap Detection Result</div>
       <div class="row mb-8">
         <span class="badge badge-${gaps.length > 0 ? 'accent' : 'safe'}">${gaps.length} gaps found</span>
         <span class="badge badge-safe">${filled.length} filled</span>
+        ${rejected.length ? `<span class="badge badge-accent">${rejected.length} not booked</span>` : ''}
         <span class="badge badge-${escalations.length > 0 ? 'accent' : 'gray'}">${escalations.length} escalations</span>
-        <span class="badge badge-gray">${r.coverage_status || 'analyzed'}</span>
+        <span class="badge badge-gray">${escHtml(r.coverage_status || 'analyzed')}</span>
       </div>
       ${escalations.length ? escalations.map(e =>
         `<div class="alert-card"><span class="alert-icon">⚠</span>${escHtml(JSON.stringify(e))}</div>`
@@ -486,7 +489,9 @@ async function runSupplyAssessment() {
     const data = await apiCall('POST', `/disasters/${currentDisasterId}/supplies/assess`);
     const r = data.data || {};
     const crit = r.critical_shortages || [];
-    const tasks = r.tasks_created_in_db || r.tasks_created || [];
+    // Tasks actually written. Falling back to the model's tasks_created listed
+    // proposals as created exactly when none had been.
+    const tasks = r.tasks_created_in_db || [];
     const suggestions = r.reallocation_suggestions || [];
     setHtml('supply-assessment-result', `<div class="card">
       <div class="card-title">Supply Assessment Result</div>
@@ -544,7 +549,7 @@ async function sendBroadcast() {
       .map(([lang, text]) => {
         const meta = langMeta[lang] || ['🌐', lang.toUpperCase()];
         return `<div class="translation-card">
-          <div class="translation-lang">${meta[0]} <span>${meta[1]}</span></div>
+          <div class="translation-lang">${meta[0]} <span>${escHtml(meta[1])}</span></div>
           <div class="translation-text">${escHtml(text)}</div>
         </div>`;
       }).join('');
@@ -578,11 +583,11 @@ async function loadBroadcasts() {
       const trans = b.message_translations || {};
       const langPills = Object.keys(trans)
         .filter(k => k !== 'sms')
-        .map(k => `<span class="lang-tag">${langFlags[k] || '🌐'} ${k.toUpperCase()}</span>`)
+        .map(k => `<span class="lang-tag">${langFlags[k] || '🌐'} ${escHtml(k.toUpperCase())}</span>`)
         .join('');
       const transRows = Object.entries(trans)
         .filter(([k]) => k !== 'sms')
-        .map(([k,v]) => `<div class="broadcast-trans-row"><span class="broadcast-trans-lang">${(langFlags[k]||'🌐')} ${k.toUpperCase()}:</span> ${escHtml(String(v).substring(0,120))}</div>`)
+        .map(([k,v]) => `<div class="broadcast-trans-row"><span class="broadcast-trans-lang">${(langFlags[k]||'🌐')} ${escHtml(k.toUpperCase())}:</span> ${escHtml(String(v).substring(0,120))}</div>`)
         .join('');
       const time = b.sent_at ? new Date(b.sent_at).toLocaleString() : (b.status === 'draft' ? 'Draft' : '—');
       return `<div class="broadcast-history-item" onclick="toggleBroadcastExpand(this)">
@@ -707,8 +712,8 @@ async function checkShiftGaps() {
       <div class="card-title">Coverage Analysis</div>
       <div class="row mb-8">
         <span class="badge badge-${(r.gaps_found||[]).length > 0 ? 'accent':'safe'}">${(r.gaps_found||[]).length} gaps</span>
-        <span class="badge badge-safe">${(r.gaps_filled||[]).length} auto-filled</span>
-        <span class="badge badge-gray">${r.coverage_status || 'analyzed'}</span>
+        <span class="badge badge-safe">${(r.shifts_created_in_db||[]).length} auto-filled</span>
+        <span class="badge badge-gray">${escHtml(r.coverage_status || 'analyzed')}</span>
       </div>
       ${(r.escalations_needed||[]).length ? `<div class="card-title text-crit">Escalations Required</div>
         ${(r.escalations_needed||[]).map(e =>
@@ -746,7 +751,7 @@ async function generateReport(type) {
           <span class="badge badge-${color}">${(type||'').toUpperCase()} REPORT</span>
           <span class="text-muted mono" style="font-size:11px;">${r.generated_at ? new Date(r.generated_at).toLocaleString() : 'now'}</span>
         </div>
-        <button class="btn btn-ghost btn-sm" onclick="copyReport(${JSON.stringify(md).replace(/"/g,'&quot;')})">
+        <button class="btn btn-ghost btn-sm" onclick="copyReport(${escHtml(JSON.stringify(md))})">
           📋 Copy
         </button>
       </div>
@@ -814,7 +819,7 @@ async function runFullDemo() {
             <span style="font-size:12px;color:var(--text-muted);font-weight:400;">${escHtml((item.command||'').substring(0,70))}</span>
           </div>
           <div class="row" style="gap:5px;">
-            ${agents.map(a => `<span class="badge badge-${AGENT_COLORS[a]||'gray'}" style="font-size:10px;">${a}</span>`).join('')}
+            ${agents.map(a => `<span class="badge badge-${AGENT_COLORS[a]||'gray'}" style="font-size:10px;">${escHtml(a)}</span>`).join('')}
             <span class="chevron">▼</span>
           </div>
         </div>

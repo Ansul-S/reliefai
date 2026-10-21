@@ -22,6 +22,9 @@ os.environ.setdefault("API_KEY", "reliefai-demo-key")
 # and fail tests for a reason that has nothing to do with what they assert.
 os.environ.setdefault("RELIEFAI_RATELIMIT", "off")
 
+from types import SimpleNamespace  # noqa: E402
+
+import httpx  # noqa: E402
 import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
 
@@ -150,5 +153,73 @@ def fake_llm(monkeypatch):
         llm = FakeLLM(turns)
         monkeypatch.setattr("agents.orchestrator._call_groq_with_tools", llm)
         return llm
+
+    return _install
+
+
+# ---------------------------------------------------------------------------
+# A fake Groq SDK client
+#
+# FakeLLM replaces the orchestrator's call wholesale, which is right for the
+# loop's control flow but skips everything inside agents/_groq_client.py.
+# FakeGroq sits one level lower, in place of the SDK client, so retries and
+# usage metering run for real.
+# ---------------------------------------------------------------------------
+
+GROQ_REQUEST = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+
+
+def groq_response(content=None, tool_calls=(), usage=(10, 5)):
+    """A chat completion shaped like the SDK's. ``tool_calls``: (id, name, args)."""
+    calls = [
+        SimpleNamespace(id=cid, function=SimpleNamespace(name=name, arguments=args))
+        for cid, name, args in tool_calls
+    ]
+    message = SimpleNamespace(content=content, tool_calls=calls or None)
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=message,
+                finish_reason="tool_calls" if calls else "stop",
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=usage[0],
+            completion_tokens=usage[1],
+            total_tokens=usage[0] + usage[1],
+        ),
+    )
+
+
+@pytest.fixture
+def fake_groq(monkeypatch):
+    """
+    Script the SDK client. Each step is a response, an exception to raise, or
+    a callable taking the request's kwargs. Backoff is zeroed so retries are
+    instant; steps carrying a "try again in Ns" hint would still really wait.
+    """
+    import agents._groq_client as groq_client
+
+    monkeypatch.setattr(groq_client, "_BASE_DELAY", 0.0)
+
+    def _install(*script):
+        steps = list(script)
+        state = {"clients": [], "requests": []}
+
+        async def create(**kwargs):
+            state["requests"].append(kwargs)
+            step = steps.pop(0)
+            if isinstance(step, BaseException):
+                raise step
+            return step(kwargs) if callable(step) else step
+
+        def client(**kwargs):
+            state["clients"].append(kwargs)
+            return SimpleNamespace(
+                chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+            )
+
+        monkeypatch.setattr(groq_client, "AsyncGroq", client)
+        return state
 
     return _install

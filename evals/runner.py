@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from sqlalchemy import func, select
 
+from agents._groq_client import track_usage
 from database import AsyncSessionLocal, create_all_tables
 from database.models import Broadcast, Note, Shift, Supply, Task, Volunteer
 from evals.dataset import CASES, CASES_BY_NAME, EvalCase
@@ -53,6 +54,9 @@ _INFRASTRUCTURE_MARKERS = (
     "temporarily unavailable",
     "service unavailable",
     "apiconnectionerror",
+    # agents/_groq_client.py, once a transient provider failure outlasts
+    # every retry. Non-retryable errors never carry this text.
+    "groq request failed",
 )
 
 
@@ -114,6 +118,24 @@ def _score_text_expectations(case: EvalCase, text: str) -> Dict[str, Any]:
     }
 
 
+def _metered(agent: Dict[str, int], judge: Optional[Dict[str, int]] = None) -> Dict[str, int]:
+    """
+    Every model call a case caused, split by who made it.
+
+    The orchestrator's own ``usage`` covers its turns only. The judge, and tools
+    that call a model (the report and comms agents), are counted here — they
+    are real spend against the provider's daily limit, and a total that leaves
+    them out understates what a run cost.
+    """
+    judge = judge or {"calls": 0, "total_tokens": 0}
+    return {
+        "agent_tokens": agent["total_tokens"],
+        "judge_tokens": judge["total_tokens"],
+        "total_tokens": agent["total_tokens"] + judge["total_tokens"],
+        "calls": agent["calls"] + judge["calls"],
+    }
+
+
 async def run_case(case: EvalCase, *, use_judge: bool = True) -> Dict[str, Any]:
     """Run and score a single evaluation case."""
     from agents.orchestrator import run_orchestrator
@@ -136,20 +158,13 @@ async def run_case(case: EvalCase, *, use_judge: bool = True) -> Dict[str, Any]:
     before = await _row_counts()
 
     async with AsyncSessionLocal() as db:
-        try:
-            result = await run_orchestrator(disaster_id, case.command, db)
-        except Exception as exc:  # noqa: BLE001
-            message = f"{type(exc).__name__}: {exc}"
-            return {
-                "case": case.name,
-                "scenario": case.scenario,
-                "tags": list(case.tags),
-                "error": message,
-                "errored": is_infrastructure_error(message),
-                "score": 0.0,
-                "passed": False,
-                "duration_s": round(time.time() - started, 1),
-            }
+        # A run that fails partway has still spent tokens, so the meter wraps
+        # the call and is read on every path out of this function.
+        with track_usage() as agent_usage:
+            try:
+                result = await run_orchestrator(disaster_id, case.command, db)
+            except Exception as exc:  # noqa: BLE001
+                result = {"error": f"{type(exc).__name__}: {exc}"}
 
     if "error" in result and "trace" not in result:
         return {
@@ -160,6 +175,7 @@ async def run_case(case: EvalCase, *, use_judge: bool = True) -> Dict[str, Any]:
             "errored": is_infrastructure_error(result["error"]),
             "score": 0.0,
             "passed": False,
+            "metered": _metered(agent_usage),
             "duration_s": round(time.time() - started, 1),
         }
 
@@ -204,14 +220,16 @@ async def run_case(case: EvalCase, *, use_judge: bool = True) -> Dict[str, Any]:
         max_tool_repeats=case.max_tool_repeats,
     )
 
+    judge_usage = None
     if use_judge:
-        dimensions["judge"] = await score_judge(
-            case.command,
-            result,
-            tool_results,
-            case.expectation,
-            operation_context=operation_context,
-        )
+        with track_usage() as judge_usage:
+            dimensions["judge"] = await score_judge(
+                case.command,
+                result,
+                tool_results,
+                case.expectation,
+                operation_context=operation_context,
+            )
     else:
         dimensions["judge"] = {
             "score": 1.0,
@@ -239,6 +257,7 @@ async def run_case(case: EvalCase, *, use_judge: bool = True) -> Dict[str, Any]:
         "tools_used": [t["tool"] for t in trace if t.get("step") == "tool"],
         "iterations": result.get("iterations"),
         "usage": result.get("usage", {}),
+        "metered": _metered(agent_usage, judge_usage),
         "summary": str(result.get("orchestrator_summary", ""))[:400],
         "duration_s": round(time.time() - started, 1),
     }
@@ -309,7 +328,10 @@ async def run_suite(
         if values:
             dimension_means[name] = round(sum(values) / len(values), 3)
 
+    # The orchestrator's own turns — kept under its old meaning so reports stay
+    # comparable with earlier runs. metered_tokens is what the run really spent.
     total_tokens = sum(r.get("usage", {}).get("total_tokens", 0) for r in results)
+    metered_tokens = sum(r.get("metered", {}).get("total_tokens", 0) for r in results)
     total_cost = sum(
         r.get("usage", {}).get("estimated_cost_usd") or 0.0 for r in results
     )
@@ -331,6 +353,7 @@ async def run_suite(
         ),
         "dimension_means": dimension_means,
         "total_tokens": total_tokens,
+        "metered_tokens": metered_tokens,
         "estimated_cost_usd": round(total_cost, 6),
         "duration_s": round(time.time() - started, 1),
         "results": results,
@@ -393,8 +416,12 @@ def format_report(report: Dict[str, Any], verbose: bool = False) -> str:
         lines.append(f"  {name:<16} {value:.2f}  {bar}")
     lines.append("")
     lines.append(
-        f"{report['total_tokens']:,} tokens   "
-        f"~${report['estimated_cost_usd']:.4f}   "
+        f"{report.get('metered_tokens', 0):,} tokens metered across every model "
+        f"call ({report['total_tokens']:,} in orchestrator turns; the rest is "
+        "the judge and tools that call a model)"
+    )
+    lines.append(
+        f"~${report['estimated_cost_usd']:.4f} excluding the judge   "
         f"{report['duration_s']}s"
     )
     lines.append("=" * width)

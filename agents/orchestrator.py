@@ -38,6 +38,7 @@ from agents._groq_client import (
     _call_groq_with_tools,
     estimate_cost_usd,
     get_model_name,
+    track_usage,
 )
 from agents.tool_registry import execute_tool, get_tool_names, get_tool_schemas
 
@@ -145,6 +146,48 @@ def _decode_result(payload: Any) -> Any:
         return payload
 
 
+def _as_text(value: Any) -> str:
+    return value if isinstance(value, str) else json.dumps(value, default=str)
+
+
+def _as_text_list(value: Any) -> List[str]:
+    """
+    Coerce a contract list field to a list of strings.
+
+    Models sometimes return a bare string where a list was asked for, or an
+    object per alert. Both carry a real answer, so they are kept as text
+    rather than failing the run; the dashboard and the scorers can then rely
+    on a list of strings.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [_as_text(v) for v in value if v is not None and v != ""]
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    return [_as_text(value)]
+
+
+def _validate_answer(parsed: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[str]]:
+    """
+    Hold the final answer to its contract: a non-empty summary string, and
+    ``alerts`` / ``next_recommended_actions`` as lists of strings.
+
+    A missing summary is an error, not an empty success — the API would
+    otherwise report a run as successful with no answer in it.
+    """
+    summary = parsed.get("orchestrator_summary")
+    if not isinstance(summary, str) or not summary.strip():
+        return {}, "Final response had no orchestrator_summary string."
+    return {
+        "orchestrator_summary": summary,
+        "alerts": _as_text_list(parsed.get("alerts")),
+        "next_recommended_actions": _as_text_list(
+            parsed.get("next_recommended_actions")
+        ),
+    }, None
+
+
 async def _run_tool_calls(
     tool_calls: List[Dict[str, Any]],
     known_tools: List[str],
@@ -166,8 +209,12 @@ async def _run_tool_calls(
         signature = _tool_call_signature(name, raw_args)
         seen[signature] = seen.get(signature, 0) + 1
         if seen[signature] > MAX_DUPLICATE_TOOL_CALLS:
+            # A refusal is still the answer to this tool call, so it carries the
+            # call's id: every tool_call_id in the assistant turn must be
+            # answered by a tool message bearing the same id.
             return {
                 "tool": name,
+                "tool_call_id": call.get("id"),
                 "arguments": {},
                 "ok": False,
                 "duration_ms": 0,
@@ -178,8 +225,14 @@ async def _run_tool_calls(
                 ),
             }
 
-        record = await execute_tool(name, raw_args, known_tools=known_tools)
+        # Two tools call a model themselves (the report and comms agents).
+        # Metering each call separately is what lets the run's usage include
+        # them, and lets the trace say which tool spent the tokens.
+        with track_usage() as meter:
+            record = await execute_tool(name, raw_args, known_tools=known_tools)
         record["tool_call_id"] = call.get("id")
+        if meter["calls"]:
+            record["model_usage"] = dict(meter)
         return record
 
     return await asyncio.gather(*(_one(c) for c in tool_calls))
@@ -206,6 +259,7 @@ async def _finalise(
     for key in ("input_tokens", "output_tokens", "total_tokens"):
         usage_totals[key] += turn["usage"][key]
     usage_totals["llm_ms"] += turn["latency_ms"]
+    usage_totals["retry_wait_ms"] += turn.get("retry_wait_ms", 0)
 
     content = (turn["message"].get("content") or "").strip()
     if not content:
@@ -227,7 +281,7 @@ async def _finalise(
     if not isinstance(parsed, dict):
         return {}, "Final response JSON was not an object."
 
-    return parsed, None
+    return _validate_answer(parsed)
 
 
 async def run_orchestrator(
@@ -245,13 +299,26 @@ async def run_orchestrator(
     token accounting.
     """
     start_ts = time.time()
+    # input/output/total_tokens are the orchestrator's own turns, comparable
+    # across runs. tool_model_* is what tools that call a model spent on top.
     usage_totals = {
         "input_tokens": 0,
         "output_tokens": 0,
         "total_tokens": 0,
+        "tool_model_input_tokens": 0,
+        "tool_model_output_tokens": 0,
+        "tool_model_tokens": 0,
         "llm_ms": 0,
         "tool_ms": 0,
+        "retry_wait_ms": 0,
     }
+
+    def _run_cost() -> Optional[float]:
+        """Every model call this command caused, including those inside tools."""
+        return estimate_cost_usd(
+            usage_totals["input_tokens"] + usage_totals["tool_model_input_tokens"],
+            usage_totals["output_tokens"] + usage_totals["tool_model_output_tokens"],
+        )
     trace: List[Dict[str, Any]] = []
     results: Dict[str, Any] = {}
     tools_called: List[str] = []
@@ -271,9 +338,7 @@ async def run_orchestrator(
             input_tokens=usage_totals["input_tokens"],
             output_tokens=usage_totals["output_tokens"],
             total_tokens=usage_totals["total_tokens"],
-            cost_usd=estimate_cost_usd(
-                usage_totals["input_tokens"], usage_totals["output_tokens"]
-            ),
+            cost_usd=_run_cost(),
             trace=trace,
         )
         await db.commit()
@@ -324,6 +389,7 @@ async def run_orchestrator(
         for key in ("input_tokens", "output_tokens", "total_tokens"):
             usage_totals[key] += turn["usage"][key]
         usage_totals["llm_ms"] += turn["latency_ms"]
+        usage_totals["retry_wait_ms"] += turn.get("retry_wait_ms", 0)
         trace.append(
             {
                 "step": "llm",
@@ -331,6 +397,15 @@ async def run_orchestrator(
                 "duration_ms": turn["latency_ms"],
                 "finish_reason": turn["finish_reason"],
                 "tokens": turn["usage"]["total_tokens"],
+                # Backoff is reported beside the latency, not hidden inside it.
+                **(
+                    {
+                        "attempts": turn["attempts"],
+                        "retry_wait_ms": turn.get("retry_wait_ms", 0),
+                    }
+                    if turn.get("attempts", 1) > 1
+                    else {}
+                ),
             }
         )
 
@@ -353,6 +428,11 @@ async def run_orchestrator(
 
         for record in records:
             usage_totals["tool_ms"] += record["duration_ms"]
+            model_usage = record.get("model_usage")
+            if model_usage:
+                usage_totals["tool_model_input_tokens"] += model_usage["input_tokens"]
+                usage_totals["tool_model_output_tokens"] += model_usage["output_tokens"]
+                usage_totals["tool_model_tokens"] += model_usage["total_tokens"]
             tools_called.append(record["tool"])
             trace.append(
                 {
@@ -363,6 +443,11 @@ async def run_orchestrator(
                     "duration_ms": record["duration_ms"],
                     "ok": record["ok"],
                     **({"error": record["error"]} if not record["ok"] else {}),
+                    **(
+                        {"model_tokens": model_usage["total_tokens"]}
+                        if model_usage
+                        else {}
+                    ),
                 }
             )
 
@@ -396,11 +481,9 @@ async def run_orchestrator(
         return await _log_failure(parse_error)
 
     duration_ms = int((time.time() - start_ts) * 1000)
-    cost_usd = estimate_cost_usd(
-        usage_totals["input_tokens"], usage_totals["output_tokens"]
-    )
+    cost_usd = _run_cost()
 
-    alerts = parsed.get("alerts") or []
+    alerts = parsed["alerts"]
 
     # Notices about how the run itself went, kept out of `alerts`. Alerts are
     # the agent's claims about the operation; a notice is the harness talking
@@ -440,7 +523,7 @@ async def run_orchestrator(
     await db.commit()
 
     return {
-        "orchestrator_summary": parsed.get("orchestrator_summary", ""),
+        "orchestrator_summary": parsed["orchestrator_summary"],
         # Kept for API/dashboard compatibility: now the tools the model chose,
         # rather than a fixed roster of prompt agents.
         "agents_called": tools_called,
@@ -448,7 +531,7 @@ async def run_orchestrator(
         "results": results,
         "alerts": alerts,
         "run_notices": run_notices,
-        "next_recommended_actions": parsed.get("next_recommended_actions", []),
+        "next_recommended_actions": parsed["next_recommended_actions"],
         "execution_time_ms": duration_ms,
         "trace": trace,
         "iterations": iterations,
@@ -457,8 +540,10 @@ async def run_orchestrator(
             "input_tokens": usage_totals["input_tokens"],
             "output_tokens": usage_totals["output_tokens"],
             "total_tokens": usage_totals["total_tokens"],
+            "tool_model_tokens": usage_totals["tool_model_tokens"],
             "llm_ms": usage_totals["llm_ms"],
             "tool_ms": usage_totals["tool_ms"],
+            "retry_wait_ms": usage_totals["retry_wait_ms"],
             "estimated_cost_usd": cost_usd,
         },
     }

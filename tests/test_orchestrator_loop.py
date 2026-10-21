@@ -123,6 +123,48 @@ async def test_repeated_identical_call_is_short_circuited(db, seeded_disaster, f
     assert "Repeated call" in tool_steps[2]["error"]
 
 
+def _assert_every_tool_call_answered_by_its_own_id(messages):
+    """
+    The function-calling protocol: an assistant turn's tool_calls must each be
+    answered by a following tool message bearing the same id.
+    """
+    for i, message in enumerate(messages):
+        calls = message.get("tool_calls") if message.get("role") == "assistant" else None
+        if not calls:
+            continue
+        answers = messages[i + 1 : i + 1 + len(calls)]
+        assert all(a.get("role") == "tool" for a in answers), answers
+        assert sorted(a["tool_call_id"] for a in answers) == sorted(
+            c["id"] for c in calls
+        )
+
+
+async def test_a_refused_duplicate_still_answers_with_its_call_id(
+    db, seeded_disaster, fake_llm
+):
+    """
+    Regression: the refusal record carried no id, so its tool message fell back
+    to the tool's *name* as tool_call_id. Groq tolerated that; a stricter
+    OpenAI-compatible endpoint rejects an unanswered tool call.
+    """
+    did = seeded_disaster["disaster_id"]
+    args = json.dumps({"disaster_id": did})
+    llm = fake_llm(
+        [
+            FakeLLM.tool_turn(("get_supply_status", args)),
+            FakeLLM.tool_turn(("get_supply_status", args)),
+            FakeLLM.tool_turn(("get_supply_status", args)),
+            FakeLLM.text_turn("Done."),
+            FakeLLM.text_turn(FINAL),
+        ]
+    )
+
+    result = await orchestrator.run_orchestrator(did, "Check supplies", db)
+
+    assert "Repeated call" in result["trace"][-2]["error"]
+    _assert_every_tool_call_answered_by_its_own_id(llm.calls[-1]["messages"])
+
+
 async def test_different_arguments_are_not_treated_as_repeats(
     db, seeded_disaster, fake_llm
 ):
@@ -292,6 +334,86 @@ async def test_final_json_wrapped_in_prose_is_recovered(db, seeded_disaster, fak
     )
 
     assert result["orchestrator_summary"] == "Assessed the situation."
+
+
+async def test_final_answer_list_fields_are_held_to_lists_of_strings(
+    db, seeded_disaster, fake_llm
+):
+    """A bare string, or an object per alert, is kept as text — not passed through."""
+    fake_llm(
+        [
+            FakeLLM.text_turn("done"),
+            FakeLLM.text_turn(json.dumps({
+                "orchestrator_summary": "Water is low.",
+                "alerts": "Water is critically low",
+                "next_recommended_actions": [{"action": "order water", "litres": 1600}],
+            })),
+        ]
+    )
+
+    result = await orchestrator.run_orchestrator(
+        seeded_disaster["disaster_id"], "Anything", db
+    )
+
+    assert result["alerts"] == ["Water is critically low"]
+    assert len(result["next_recommended_actions"]) == 1
+    assert isinstance(result["next_recommended_actions"][0], str)
+    assert "1600" in result["next_recommended_actions"][0]
+
+
+async def test_final_answer_without_a_summary_is_an_error(
+    db, seeded_disaster, fake_llm
+):
+    """An empty summary must not come back as a successful run with no answer."""
+    fake_llm(
+        [
+            FakeLLM.text_turn("done"),
+            FakeLLM.text_turn(json.dumps({"alerts": ["Water is low"]})),
+        ]
+    )
+
+    result = await orchestrator.run_orchestrator(
+        seeded_disaster["disaster_id"], "Anything", db
+    )
+
+    assert "error" in result
+    assert "orchestrator_summary" in result["error"]
+
+
+async def test_tokens_spent_by_a_tool_that_calls_a_model_are_reported(
+    db, seeded_disaster, fake_llm, fake_groq
+):
+    """
+    generate_situation_report runs the report agent, a model call of its own.
+    The orchestrator's usage used to count only its own turns, so that spend
+    appeared nowhere — not in the response, the log row or the cost estimate.
+    """
+    did = seeded_disaster["disaster_id"]
+    fake_llm(
+        [
+            FakeLLM.tool_turn(
+                ("generate_situation_report", json.dumps({"disaster_id": did}))
+            ),
+            FakeLLM.text_turn("Done."),
+            FakeLLM.text_turn(FINAL),
+        ]
+    )
+    # The report agent's own call goes through the real client, scripted below.
+    from tests.conftest import groq_response
+
+    fake_groq(groq_response(
+        json.dumps({"report_type": "internal", "sections": {},
+                    "critical_flags": [], "markdown_report": "# Report"}),
+        usage=(100, 50),
+    ))
+
+    result = await orchestrator.run_orchestrator(did, "Write a report", db)
+
+    assert result["usage"]["tool_model_tokens"] == 150
+    tool_step = next(t for t in result["trace"] if t["step"] == "tool")
+    assert tool_step["model_tokens"] == 150
+    # The orchestrator's own count is unchanged, so earlier runs stay comparable.
+    assert result["usage"]["total_tokens"] == 45
 
 
 async def test_missing_disaster_returns_error(db, fake_llm):

@@ -8,7 +8,9 @@ Two entry points:
                             loop; returns the raw assistant message so the caller
                             can inspect ``tool_calls``
 
-Both retry with exponential backoff on rate limit errors (429).
+Both go through ``_create``, the one place that retries. Every successful call
+is metered twice: into the daily spend cap (``ratelimit``) and into any
+``track_usage()`` block open around it.
 """
 from __future__ import annotations
 
@@ -16,9 +18,12 @@ import asyncio
 import json
 import os
 import re
-from typing import Any, Dict, List, Optional
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from groq import AsyncGroq, RateLimitError
+from groq import APIConnectionError, APIStatusError, AsyncGroq, RateLimitError
 
 _MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
@@ -46,9 +51,41 @@ def estimate_cost_usd(input_tokens: int, output_tokens: int) -> Optional[float]:
         8,
     )
 
-# Max retries and base delay (seconds) for exponential backoff
-_MAX_RETRIES = 4
-_BASE_DELAY  = 5.0
+# Attempts per logical call, and the base delay (seconds) for exponential
+# backoff between them: 5, 10, 20.
+_MAX_ATTEMPTS = 4
+_BASE_DELAY = 5.0
+
+
+# ---------------------------------------------------------------------------
+# Usage metering
+# ---------------------------------------------------------------------------
+
+# Every meter open in the current context. A tuple, so an inner block (one tool
+# call) and an outer one (a whole eval case) both see the same model call.
+_usage_meters: ContextVar[Tuple[Dict[str, int], ...]] = ContextVar(
+    "_usage_meters", default=()
+)
+
+
+@contextmanager
+def track_usage() -> Iterator[Dict[str, int]]:
+    """
+    Meter every model call made inside the block, however deeply nested.
+
+    The orchestrator's ``usage`` counts its own turns only. A tool that calls a
+    model — the report and comms agents — and the eval judge are invisible to
+    it, so any total summed from those blocks undercounts what Groq bills. The
+    meter rides on the context rather than on call signatures: asyncio tasks
+    copy the context, and the dicts inside it are shared, so tool calls running
+    concurrently report into the same meters.
+    """
+    meter = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    token = _usage_meters.set(_usage_meters.get() + (meter,))
+    try:
+        yield meter
+    finally:
+        _usage_meters.reset(token)
 
 
 def _report_tokens(count: int) -> None:
@@ -70,67 +107,133 @@ def _report_tokens(count: int) -> None:
         pass
 
 
+def _record_usage(usage: Any) -> Dict[str, int]:
+    """Normalise a response's usage block and report it to every meter."""
+    counts = {
+        "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+        "output_tokens": getattr(usage, "completion_tokens", 0) or 0,
+        "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+    }
+    for meter in _usage_meters.get():
+        meter["calls"] += 1
+        for key, value in counts.items():
+            meter[key] += value
+    _report_tokens(counts["total_tokens"])
+    return counts
+
+
+# ---------------------------------------------------------------------------
+# Retries
+# ---------------------------------------------------------------------------
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """Rate limits and transient provider failures; never a malformed request."""
+    if isinstance(exc, RateLimitError):
+        # A daily limit does not come back within this backoff schedule, so
+        # retrying only delays the failure by half a minute.
+        return "per day" not in str(exc).lower()
+    if isinstance(exc, APIConnectionError):  # includes APITimeoutError
+        return True
+    if isinstance(exc, APIStatusError):
+        return exc.status_code >= 500 or exc.status_code in (408, 409)
+    return False
+
+
+def _retry_wait(exc: Exception, attempt: int) -> float:
+    """Exponential backoff, stretched to Groq's own suggestion when it gives one."""
+    wait = _BASE_DELAY * (2 ** attempt)
+    m = re.search(r"try again in (\d+(?:\.\d+)?)s", str(exc))
+    if m:
+        wait = min(max(wait, float(m.group(1)) + 2), 60)
+    return wait
+
+
+def _exhausted(exc: Exception, attempts: int) -> RuntimeError:
+    """
+    The error raised when a retryable failure outlasts every attempt.
+
+    The runner classifies failures by substring: "rate limit" and "groq request
+    failed" mark an environment failure, and "per day" aborts the suite. The
+    provider's own text is kept for that reason, and this wrapper never adds
+    "per day" itself — a per-minute 429 that outlasts the retries must not read
+    as a daily one.
+    """
+    if isinstance(exc, RateLimitError):
+        return RuntimeError(
+            f"Groq rate limit exceeded after {attempts} attempt(s). "
+            f"Original error: {exc}"
+        )
+    return RuntimeError(
+        f"Groq request failed after {attempts} attempt(s) "
+        f"({type(exc).__name__}). Original error: {exc}"
+    )
+
+
+async def _create(**kwargs: Any) -> Tuple[Any, Dict[str, int]]:
+    """
+    One logical chat completion, retried here and only here.
+
+    The SDK's own retries are switched off (``max_retries=0``). Left on, its
+    two retries ran inside each of these attempts — up to twelve requests per
+    call into an already rate-limited bucket — and their waits landed inside
+    the measured latency, so a slow-looking turn could really be backoff.
+
+    Returns ``(response, timing)`` where timing is ``{attempts, retry_wait_ms,
+    latency_ms}`` and ``latency_ms`` covers the successful attempt only.
+    """
+    client = AsyncGroq(api_key=os.environ["GROQ_API_KEY"], max_retries=0)
+    waited = 0.0
+
+    for attempt in range(_MAX_ATTEMPTS):
+        started = time.monotonic()
+        try:
+            response = await client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            # Anything not worth retrying — a malformed request, bad auth, a
+            # daily limit — propagates unchanged, as it always has.
+            if not _is_retryable(exc):
+                raise
+            if attempt == _MAX_ATTEMPTS - 1:
+                raise _exhausted(exc, attempt + 1) from exc
+            wait = _retry_wait(exc, attempt)
+            waited += wait
+            await asyncio.sleep(wait)
+            continue
+
+        return response, {
+            "attempts": attempt + 1,
+            "retry_wait_ms": int(waited * 1000),
+            "latency_ms": int((time.monotonic() - started) * 1000),
+        }
+
+    raise RuntimeError("Groq call failed for an unknown reason.")
+
+
+# ---------------------------------------------------------------------------
+# Entry points
+# ---------------------------------------------------------------------------
+
+
 async def _call_groq(system_prompt: str, user_message: str) -> dict:
     """
-    Call Groq chat completions with JSON-mode enabled.
-    Automatically retries on 429 rate-limit errors with exponential backoff:
-      Attempt 1 → wait 5s
-      Attempt 2 → wait 10s
-      Attempt 3 → wait 20s
-      Attempt 4 → wait 40s (or Groq's suggested wait, whichever is longer)
-    Raises RuntimeError after all retries exhausted.
-    Non-rate-limit errors propagate immediately.
+    Call Groq chat completions with JSON-mode enabled and return the parsed
+    object. Retries are handled by ``_create``; anything it gives up on is
+    raised as ``RuntimeError``.
     """
-    client = AsyncGroq(api_key=os.environ["GROQ_API_KEY"])
-    last_exc: Exception | None = None
+    response, _timing = await _create(
+        model=_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        temperature=0.3,
+        max_tokens=4096,
+        response_format={"type": "json_object"},
+    )
+    _record_usage(response.usage)
+    return json.loads(response.choices[0].message.content)
 
-    for attempt in range(_MAX_RETRIES):
-        try:
-            response = await client.chat.completions.create(
-                model=_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": user_message},
-                ],
-                temperature=0.3,
-                max_tokens=4096,
-                response_format={"type": "json_object"},
-            )
-            usage = response.usage
-            _report_tokens(getattr(usage, "total_tokens", 0) or 0)
-            raw = response.choices[0].message.content
-            return json.loads(raw)
-
-        except RateLimitError as exc:
-            last_exc = exc
-            # Exponential backoff: 5, 10, 20, 40 seconds
-            wait = _BASE_DELAY * (2 ** attempt)
-            # Respect Groq's suggested retry-after if embedded in error message
-            m = re.search(r'try again in (\d+(?:\.\d+)?)s', str(exc))
-            if m:
-                suggested = float(m.group(1))
-                # Use whichever is longer, capped at 60s
-                wait = min(max(wait, suggested + 2), 60)
-
-            if attempt < _MAX_RETRIES - 1:
-                # More attempts remaining — wait and retry
-                await asyncio.sleep(wait)
-                continue
-
-            # All retries exhausted
-            raise RuntimeError(
-                f"Groq rate limit exceeded after {_MAX_RETRIES} attempts. "
-                f"You may have hit the daily token limit (100k/day on free tier). "
-                f"Resets at midnight UTC. Original error: {exc}"
-            ) from exc
-
-        except Exception:
-            # Network errors, parse errors, etc. — don't retry
-            raise
-
-    # Unreachable, but satisfies type checker
-    if last_exc:
-        raise last_exc
 
 async def _call_groq_with_tools(
     messages: List[Dict[str, Any]],
@@ -146,7 +249,7 @@ async def _call_groq_with_tools(
 
     Unlike :func:`_call_groq` this does not parse JSON — it hands back the raw
     assistant message so the caller can inspect ``tool_calls`` and drive the
-    loop. Retries on 429 with the same backoff policy.
+    loop.
 
     Returns::
 
@@ -154,81 +257,48 @@ async def _call_groq_with_tools(
           "message": <assistant message dict, may contain tool_calls>,
           "finish_reason": str,
           "usage": {"input_tokens": int, "output_tokens": int, "total_tokens": int},
-          "latency_ms": int,
+          "latency_ms": int,       # the successful attempt only
+          "attempts": int,
+          "retry_wait_ms": int,    # time spent backing off before it
         }
     """
-    client = AsyncGroq(api_key=os.environ["GROQ_API_KEY"])
-    last_exc: Exception | None = None
+    kwargs: Dict[str, Any] = {
+        "model": _MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = tool_choice
+    if response_format is not None:
+        kwargs["response_format"] = response_format
 
-    for attempt in range(_MAX_RETRIES):
-        started = asyncio.get_event_loop().time()
-        try:
-            kwargs: Dict[str, Any] = {
-                "model": _MODEL,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
-            if tools:
-                kwargs["tools"] = tools
-                kwargs["tool_choice"] = tool_choice
-            if response_format is not None:
-                kwargs["response_format"] = response_format
+    response, timing = await _create(**kwargs)
 
-            response = await client.chat.completions.create(**kwargs)
-            latency_ms = int((asyncio.get_event_loop().time() - started) * 1000)
+    choice = response.choices[0]
+    message = choice.message
 
-            choice = response.choices[0]
-            message = choice.message
-
-            tool_calls = []
-            for tc in (message.tool_calls or []):
-                tool_calls.append(
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                )
-
-            usage = response.usage
-            total_tokens = getattr(usage, "total_tokens", 0) or 0
-            _report_tokens(total_tokens)
-            return {
-                "message": {
-                    "role": "assistant",
-                    "content": message.content,
-                    "tool_calls": tool_calls or None,
+    tool_calls = []
+    for tc in (message.tool_calls or []):
+        tool_calls.append(
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments,
                 },
-                "finish_reason": choice.finish_reason,
-                "usage": {
-                    "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
-                    "output_tokens": getattr(usage, "completion_tokens", 0) or 0,
-                    "total_tokens": total_tokens,
-                },
-                "latency_ms": latency_ms,
             }
+        )
 
-        except RateLimitError as exc:
-            last_exc = exc
-            wait = _BASE_DELAY * (2 ** attempt)
-            m = re.search(r"try again in (\d+(?:\.\d+)?)s", str(exc))
-            if m:
-                wait = min(max(wait, float(m.group(1)) + 2), 60)
-            if attempt < _MAX_RETRIES - 1:
-                await asyncio.sleep(wait)
-                continue
-            raise RuntimeError(
-                f"Groq rate limit exceeded after {_MAX_RETRIES} attempts. "
-                f"Original error: {exc}"
-            ) from exc
-
-        except Exception:
-            raise
-
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("Groq tool call failed for an unknown reason.")
+    return {
+        "message": {
+            "role": "assistant",
+            "content": message.content,
+            "tool_calls": tool_calls or None,
+        },
+        "finish_reason": choice.finish_reason,
+        "usage": _record_usage(response.usage),
+        **timing,
+    }

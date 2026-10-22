@@ -69,13 +69,65 @@ mean down, though a judge that did not answer says nothing about the agent.
 - `dimension_means` now averages assessable cases only. Errored records had no
   dimensions until now, so earlier reports are unaffected.
 
+### 5. Run 8 — 5/6, mean 0.97, 66,205 tokens metered
+
+Six targeted cases at `5565bc0`, `--delay 8`. Orchestrator turns cost 49,541
+tokens; every model call together cost 66,205, against an estimate of ~65k.
+No 429 occurred, so Groq's own count was never seen and the 48k question
+stays open. Per-case orchestrator tokens ran 5–10 % above v6 (for example
+14,312 → 14,982).
+
+Confirmed live:
+
+- **Metering.** In both cases that call a model inside a tool,
+  `metered.agent_tokens` equals `usage.total_tokens` plus `tool_model_tokens`
+  exactly: 8,102 + 2,049 = 10,151 (donor report) and 8,136 + 1,650 = 9,786
+  (broadcast).
+- **The gap scan's window.** `reports_coverage_gaps_with_its_window` described
+  "42 blocks … over the next 7 days (4-hour blocks)", with 27/27 grounded.
+- **The stricter grounding scorer** on the cheap control,
+  `simple_lookup_is_efficient`: 5/5.
+- **`schedule_shift`'s id checks on the valid path:** one shift booked, 1.00.
+
+**Not exercised: B1.** All five supplies in `critical_supply_shortage` are
+`high`, so the old and new code return the same order.
+`supply_shortage_identification` (1.00) is a no-regression control only.
+
+**The failure: `sends_multilingual_broadcast` (0.88).**
+
+- Grounding flagged `[4.0, 5.0]` from "severity 4/5". The statement is true.
+  It comes from the operation briefing, `describe_disaster`, and the agent
+  called no tool that returns severity.
+- The judge has seen the briefing since 2026-09-04; the grounding scorer still
+  does not. v6's answer did not mention severity, so this is not a regression
+  from the identifier change.
+- The same answer says the message was "dispatched via SMS, radio, and social
+  media". The tool only saves a draft, and its payload never says so:
+  `status="draft"` is written to the database but not returned. The judge
+  scored grounding 5/5.
+
+**Correction to 2026-09-04: v6's `[41.0]` was a true positive.**
+
+- A block is a gap while it has fewer than `SHIFT_GAP_MIN_VOLUNTEERS` (2)
+  volunteers. Booking one volunteer into an empty block leaves it at 1, still
+  a gap.
+- An offline probe of `understaffed_operation` confirms it: the block goes
+  0 → 1 and `gap_count` stays 42. So "41 remaining" was false, and the scorer
+  was right.
+- v8's agent made the same error in words, "the gap for that block is now
+  covered", beside a correct alert that 42 remain. Grounding (10/10) and the
+  judge (5/5) both missed it.
+
+**"A 42-day coverage gap" recurred** in `generates_donor_report`, with judge
+grounding 5/5. The likely source is `agents/report_agent.py:153`, which gives
+the report model `coverage_gaps_next_7days=42` with no unit. This is not
+confirmed, because reports do not store tool payloads.
+
 ### What still needs a live run
 
-- `supply_shortage_identification`, `creates_procurement_task` and
-  `situation_assessment_multi_tool` now see high-priority supplies first.
-  Their scenario has 5 supplies, well under the truncation limit, so only the
-  order changes.
-- `schedules_shift_from_available_volunteers` exercises the valid-id path.
+- **B1's order change.** It needs a scenario with mixed priorities.
+- **`schedule_shift`'s refusal path.** It needs a model to send an unknown id.
+- **`metered_tokens` against Groq's own `Used` figure.**
 
 ## 2026-10-20
 
@@ -320,6 +372,9 @@ from `schedule_shift`. `_grounded_number_set` derives differences only within a
 single record, so cross-payload arithmetic is unverifiable to it. Fourth
 instance of the same family as the stray `7.0` and the ISO-8601 dates: a true
 statement the scorer cannot see. **Not yet fixed.**
+
+**Corrected 2026-10-22:** not a false positive. A block needs 2 volunteers, so
+one booking leaves it a gap, and 42 remained. See the 2026-10-22 entry.
 
 `generates_donor_report` passed while saying "a 42-day coverage gap" — it is 42
 blocks across 7 days. Grounding scored 16/16 because `42` was in the payload.

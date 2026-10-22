@@ -52,10 +52,12 @@ relief_verify.db
 eval_report*.json
 
 # ── Local working notes (deliberately untracked) ──────────────────────────
-# Session handoff and agent guidance. Local to this machine by choice — the
-# durable project documentation is README.md and CHANGELOG.md.
+# Session handoff, agent guidance and interview preparation. Local to this
+# machine by choice — the durable project documentation is README.md and
+# CHANGELOG.md.
 CLAUDE.md
 NEXT_SESSION.md
+docs/AIML_ENGINEER_INTERVIEW_GUIDE.md
 .claude/settings.local.json
 
 # ── Editors and OS ────────────────────────────────────────────────────────

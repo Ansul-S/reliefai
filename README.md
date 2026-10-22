@@ -176,7 +176,7 @@ curl -X POST http://localhost:8000/disasters/1/command \
 ### 7. Run the checks
 
 ```bash
-pytest                  # 173 tests, no API key or network needed
+pytest                  # 176 tests, no API key or network needed
 python -m evals --list  # see the evaluation cases
 ```
 

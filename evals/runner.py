@@ -245,7 +245,7 @@ async def run_case(case: EvalCase, *, use_judge: bool = True) -> Dict[str, Any]:
     total_weight = sum(weights.values()) or 1.0
     score = sum(dimensions[d]["score"] * w for d, w in weights.items()) / total_weight
 
-    return {
+    record = {
         "case": case.name,
         "scenario": case.scenario,
         "tags": list(case.tags),
@@ -258,9 +258,26 @@ async def run_case(case: EvalCase, *, use_judge: bool = True) -> Dict[str, Any]:
         "iterations": result.get("iterations"),
         "usage": result.get("usage", {}),
         "metered": _metered(agent_usage, judge_usage),
-        "summary": str(result.get("orchestrator_summary", ""))[:400],
+        # The claim text grounding scored, in full, so a number it flags can
+        # be traced to the sentence that stated it.
+        "summary": str(result.get("orchestrator_summary", "")),
+        "alerts": [str(a) for a in result.get("alerts", [])],
         "duration_s": round(time.time() - started, 1),
     }
+
+    # A judge that could not answer says nothing about the agent, whatever the
+    # reason, so the case is unassessed rather than scored 0 on that
+    # dimension. The other dimensions stay in the record for reference. The
+    # provider's text is kept, so a daily-limit 429 still aborts the suite.
+    judge_error = dimensions["judge"].get("error")
+    if judge_error:
+        record.update(
+            error=f"judge unavailable: {judge_error}",
+            errored=True,
+            score=0.0,
+            passed=False,
+        )
+    return record
 
 
 def select_cases(
@@ -320,7 +337,7 @@ async def run_suite(
     errored = [r for r in results if r.get("errored")]
     assessable = [r for r in results if not r.get("errored")]
     passed = [r for r in assessable if r["passed"]]
-    scored = [r for r in results if "dimensions" in r]
+    scored = [r for r in assessable if "dimensions" in r]
 
     dimension_means: Dict[str, float] = {}
     for name in ("tool_selection", "grounding", "side_effects", "loop_health", "judge"):

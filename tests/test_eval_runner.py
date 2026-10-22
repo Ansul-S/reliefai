@@ -83,3 +83,84 @@ async def test_a_case_that_fails_midway_still_reports_what_it_spent(fake_groq):
     assert "error" in case
     assert case["metered"]["agent_tokens"] == 238
     assert report["metered_tokens"] == 238
+
+
+async def test_report_keeps_the_text_the_grounding_scorer_read(fake_groq):
+    """
+    Regression: the report kept the summary cut to 400 characters and dropped
+    `alerts`, though grounding scores both. v6 flagged `[41.0]` from a summary
+    that does not contain 41, so the sentence that claimed it was lost.
+    """
+    summary = "450 sandbags available of 500 needed. " + "Stock is holding. " * 25
+    alert = "Depot B reports 7919 sandbags missing."
+    fake_groq(
+        _tool_turn,
+        groq_response("I have the sandbag count.", usage=(120, 8)),
+        groq_response(
+            json.dumps({
+                "orchestrator_summary": summary,
+                "alerts": [alert],
+                "next_recommended_actions": [],
+            }),
+            usage=(130, 20),
+        ),
+    )
+
+    report = await run_suite(
+        [CASES_BY_NAME["simple_lookup_is_efficient"]], use_judge=False
+    )
+    case = report["results"][0]
+
+    assert "7919.0" in case["dimensions"]["grounding"]["detail"]
+    assert case["alerts"] == [alert]
+    assert case["summary"] == summary
+
+
+def _answered_case_script():
+    """The orchestrator's three turns for a correct, grounded answer."""
+    return (
+        _tool_turn,
+        groq_response("I have the sandbag count.", usage=(120, 8)),
+        groq_response(
+            json.dumps({
+                "orchestrator_summary": "450 sandbags available of 500 needed.",
+                "alerts": [],
+                "next_recommended_actions": [],
+            }),
+            usage=(130, 20),
+        ),
+    )
+
+
+async def test_a_judge_that_cannot_answer_leaves_the_case_unassessed(fake_groq):
+    """
+    Regression: a judge exception scored the dimension 0, so a correct answer
+    could fail — and drag the judge mean down — because the judge was
+    unavailable.
+    """
+    from tests.test_groq_client import _bad_request
+
+    fake_groq(*_answered_case_script(), _bad_request())
+
+    report = await run_suite([CASES_BY_NAME["simple_lookup_is_efficient"]])
+    case = report["results"][0]
+
+    assert case["errored"] is True
+    assert "judge unavailable" in case["error"]
+    assert (report["errored"], report["failed"], report["passed"]) == (1, 0, 0)
+    assert "judge" not in report["dimension_means"]
+    # What the agent did is still recorded.
+    assert case["dimensions"]["grounding"]["passed"]
+    assert "[ERR ] simple_lookup_is_efficient" in format_report(report)
+
+
+async def test_a_judge_out_of_daily_budget_aborts_the_suite(fake_groq):
+    from tests.test_groq_client import PER_DAY, _rate_limited
+
+    fake_groq(*_answered_case_script(), _rate_limited(PER_DAY))
+
+    case = CASES_BY_NAME["simple_lookup_is_efficient"]
+    report = await run_suite([case, case])
+
+    assert report["aborted"] is True
+    assert (report["total"], report["requested"]) == (1, 2)

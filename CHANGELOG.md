@@ -2,8 +2,9 @@
 
 ## 2026-10-22
 
-Two defects found while auditing the codebase on 2026-10-22. Tests 168 → 173.
-**No eval run.** Both fixes are verified by tests, and no model call was made.
+Two defects found while auditing the codebase on 2026-10-22 (1–2), and two
+eval-harness fixes made before the next run (3–4). Tests 168 → 176.
+**No eval run.** Every fix is verified by tests, and no model call was made.
 
 ### 1. Supplies sorted high priority last — `database/crud.py`
 
@@ -38,6 +39,35 @@ declares foreign keys, but SQLite enforces them only when each connection runs
 
 All six eval scenarios, `seed_demo.py` and the dashboard's demo seed were
 built with enforcement on, and `PRAGMA foreign_key_check` stayed empty.
+
+### 3. The report dropped the text grounding scored — `evals/runner.py`
+
+Grounding scores the summary and `alerts` together. Each case's record kept the
+summary cut at 400 characters and no `alerts` at all, so a flagged number could
+not be traced to the sentence that stated it.
+
+- v6 flagged `[41.0]` on `schedules_shift_from_available_volunteers`, and 41
+  is not in that case's 393-character summary.
+- v3's flagged `8.0` is missing from its summary too.
+- One summary per run reached the cap in v3, v4, v6 and v7.
+
+Records now keep `summary` in full and add `alerts`.
+
+### 4. A failed judge call failed the case — `evals/runner.py`
+
+`score_judge` catches its own exception and returns a score of 0. A
+rate-limited judge therefore cost a correct answer 0.20 and pulled the judge
+mean down, though a judge that did not answer says nothing about the agent.
+
+- Any judge exception now marks the case `errored`. It is left out of the pass
+  rate, the mean score and the dimension means, and the CLI exits 3 rather
+  than 1 when that is the only problem.
+- The record keeps the other dimensions, so what the agent did is still
+  visible.
+- The provider's text is kept, so a judge that hits the daily limit aborts the
+  suite, as the orchestrator does.
+- `dimension_means` now averages assessable cases only. Errored records had no
+  dimensions until now, so earlier reports are unaffected.
 
 ### What still needs a live run
 

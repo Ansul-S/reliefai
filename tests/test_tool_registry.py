@@ -129,6 +129,37 @@ async def test_supply_payload_carries_the_threshold_that_classified_it(
     assert all(s["critical_threshold_pct"] == 30 for s in supplies)
 
 
+async def test_supply_payload_lists_high_priority_first(db):
+    """
+    Regression: priority is stored as text, and ordering it descending gave
+    medium, low, high. The most urgent items came last, so they were the first
+    cut when a payload was truncated.
+    """
+    disaster = await crud.create_disaster(db, "Priority Probe", "flood", "Testville", 2)
+    for name, priority in (
+        ("Antibiotics", "low"),
+        ("Blankets", "high"),
+        ("Cots", "medium"),
+        ("Diesel", "high"),
+        ("Ether", "unrated"),
+    ):
+        await crud.create_supply(db, disaster.id, name, "medical", 100.0, 50.0, "units", priority)
+    await db.commit()
+
+    record = await execute_tool(
+        "get_supply_status", json.dumps({"disaster_id": disaster.id})
+    )
+    supplies = json.loads(record["result"])
+
+    assert [(s["priority"], s["item_name"]) for s in supplies] == [
+        ("high", "Blankets"),
+        ("high", "Diesel"),
+        ("medium", "Cots"),
+        ("low", "Antibiotics"),
+        ("unrated", "Ether"),
+    ]
+
+
 async def test_gap_payload_carries_its_scan_parameters(seeded_disaster):
     """detect_shift_gaps reports the window it scanned, not just what it found."""
     record = await execute_tool(
@@ -192,6 +223,38 @@ async def test_gap_scan_counts_people_not_shifts(db, monkeypatch):
 
     assert (first["date"], first["hour_block"]) == ("2030-01-01", 8)
     assert first["volunteers_count"] == 1
+
+
+def _shift_args(seeded_disaster, **overrides):
+    return json.dumps({
+        "disaster_id": seeded_disaster["disaster_id"],
+        "volunteer_id": seeded_disaster["volunteer_id"],
+        "role": "Triage",
+        "start_time": "2030-01-01T08:00:00+00:00",
+        "end_time": "2030-01-01T12:00:00+00:00",
+        **overrides,
+    })
+
+
+async def test_schedule_shift_books_a_known_volunteer(seeded_disaster):
+    record = await execute_tool("schedule_shift", _shift_args(seeded_disaster))
+    shift = json.loads(record["result"])
+    assert shift["volunteer_id"] == seeded_disaster["volunteer_id"]
+    assert shift["volunteer_name"] == "Test Volunteer"
+
+
+@pytest.mark.parametrize("field, label", [("volunteer_id", "Volunteer"), ("disaster_id", "Disaster")])
+async def test_schedule_shift_refuses_ids_that_do_not_exist(db, seeded_disaster, field, label):
+    """
+    Regression: the tool booked volunteer 99999 on disaster 424242, neither of
+    which existed, and the row persisted. A model-invented id has to come back
+    as an error naming it, so the agent can correct itself.
+    """
+    args = _shift_args(seeded_disaster, **{field: 424242})
+    record = await execute_tool("schedule_shift", args)
+
+    assert json.loads(record["result"]) == {"error": f"{label} 424242 not found."}
+    assert await crud.list_shifts_by_disaster(db, json.loads(args)["disaster_id"]) == []
 
 
 async def test_disaster_status_carries_the_severity_scale(seeded_disaster):

@@ -4,6 +4,7 @@ import os
 from typing import Any, AsyncGenerator
 
 from dotenv import load_dotenv
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -24,6 +25,16 @@ engine: AsyncEngine = create_async_engine(
     echo=False,
     connect_args={"check_same_thread": False},
 )
+
+if DATABASE_URL.startswith("sqlite"):
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _enable_foreign_keys(dbapi_connection: Any, _record: Any) -> None:
+        """SQLite ignores foreign keys unless each connection turns them on."""
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
 
 AsyncSessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
     bind=engine,

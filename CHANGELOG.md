@@ -1,5 +1,52 @@
 # Changelog
 
+## 2026-10-22
+
+Two defects found while auditing the codebase on 2026-10-22. Tests 168 → 173.
+**No eval run.** Both fixes are verified by tests, and no model call was made.
+
+### 1. Supplies sorted high priority last — `database/crud.py`
+
+`list_supplies_by_disaster` ordered by `Supply.priority.desc()`. Priority is
+stored as text, so descending order is alphabetical in reverse: `medium`,
+`low`, `high`. Every consumer inherited that order: `get_supply_status`, the
+supply and report agents' prompts, and `GET /disasters/{id}/supplies`. Tool
+results are truncated from the end at 8,000 characters, so in a large
+operation the most urgent items were the first cut.
+
+Supplies are now ordered by a rank, high → medium → low, with any other value
+last and item name breaking ties. A test pins the payload order. It fails on
+the old code, whose first record is the unrated item.
+
+### 2. `schedule_shift` booked people and operations that did not exist
+
+The tool passed the model's ids straight to `create_shift`. A probe booked
+volunteer 99999 on disaster 424242 and both rows were written. The schema
+declares foreign keys, but SQLite enforces them only when each connection runs
+`PRAGMA foreign_keys=ON`, and nothing did.
+
+- The tool now checks both ids first. It returns `Disaster N not found.` or
+  `Volunteer N not found.`, the wording the HTTP route already uses, and
+  writes nothing. A model can correct a named id; it cannot correct a raw
+  constraint error.
+- The engine turns foreign keys on for every SQLite connection, so no other
+  writer can store a row that points at nothing either. Other tools, such as
+  `create_task` with an unknown `disaster_id`, now return the constraint error
+  instead of writing.
+- Rows written before this change are not re-checked. They stay readable, and
+  their non-key columns can still be updated.
+
+All six eval scenarios, `seed_demo.py` and the dashboard's demo seed were
+built with enforcement on, and `PRAGMA foreign_key_check` stayed empty.
+
+### What still needs a live run
+
+- `supply_shortage_identification`, `creates_procurement_task` and
+  `situation_assessment_multi_tool` now see high-priority supplies first.
+  Their scenario has 5 supplies, well under the truncation limit, so only the
+  order changes.
+- `schedules_shift_from_available_volunteers` exercises the valid-id path.
+
 ## 2026-10-20
 
 A review of the AI pipeline turned up the defects below; this entry fixes

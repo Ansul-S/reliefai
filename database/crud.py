@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -403,6 +403,11 @@ async def get_volunteer_hours_today(
 # Supply
 # ---------------------------------------------------------------------------
 
+# Priority is stored as text, so ordering by the column sorts it alphabetically
+# (medium, low, high when descending). Supplies are ordered by this rank
+# instead, most urgent first; a value outside the three levels sorts last.
+_PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
+
 
 async def create_supply(
     db: AsyncSession,
@@ -442,7 +447,10 @@ async def list_supplies_by_disaster(
     result = await db.execute(
         select(Supply)
         .where(Supply.disaster_id == disaster_id)
-        .order_by(Supply.priority.desc(), Supply.item_name)
+        .order_by(
+            case(_PRIORITY_RANK, value=Supply.priority, else_=len(_PRIORITY_RANK)),
+            Supply.item_name,
+        )
     )
     return list(result.scalars().all())
 

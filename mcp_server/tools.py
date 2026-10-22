@@ -160,6 +160,13 @@ async def schedule_shift(
 
     try:
         async with AsyncSessionLocal() as db:
+            # The ids come from the model. Refuse one that names nothing, in
+            # words it can act on, rather than store a shift for nobody.
+            if await crud.get_disaster(db, disaster_id) is None:
+                return {"error": f"Disaster {disaster_id} not found."}
+            if await crud.get_volunteer(db, volunteer_id) is None:
+                return {"error": f"Volunteer {volunteer_id} not found."}
+
             shift = await crud.create_shift(
                 db=db,
                 disaster_id=disaster_id,
